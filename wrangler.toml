@@ -1,0 +1,11 @@
+name = "corss"
+main = "src/index.ts"
+compatibility_date = "2025-04-27"
+compatibility_flags = [ "nodejs_compat"]
+browser = { binding = "MYBROWSER" }
+kv_namespaces = [
+  { binding = "BROWSER_KV_DEMO", id = "36eb73fd6d254c4bb2a0e55b56420ac3", preview_id = "e7c760c37afd4d469513287e1233179c" }
+]
+[observability]
+enabled = true
+head_sampling_rate = 1 # optional. default = 1.
