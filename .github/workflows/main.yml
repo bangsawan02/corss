@@ -1,4 +1,4 @@
-name: Debian Remote Desktop with noVNC
+name: Debian Remote Desktop with noVNC (Docker)
 
 on:
   workflow_dispatch:
@@ -11,6 +11,9 @@ on:
 jobs:
   debian-gui:
     runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm-slim
+      options: --privileged
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -19,22 +22,18 @@ jobs:
       - name: Cache APT Archives
         uses: actions/cache@v4
         with:
-          path: |
-            /var/cache/apt/archives
-            /var/lib/apt/lists
-          key: ${{ runner.os }}-debian-apt-${{ hashFiles('.github/workflows/main.yml') }}
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-debian-docker-apt-${{ hashFiles('.github/workflows/main.yml') }}
           restore-keys: |
-            ${{ runner.os }}-debian-apt-
+            ${{ runner.os }}-debian-docker-apt-
 
-      # 2. Package installations
+      # 2. Package installations inside Debian container
       - name: Install Desktop (XFCE4) & websockify (noVNC)
         run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 xfce4-goodies tightvncserver websockify dbus-x11 \
-            tmate curl wget htop git novnc
-          # Avoid missing firefox-esr on Ubuntu, fetch standard browser candidates safely
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y firefox || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y chromium-browser || true
+            tmate curl wget htop git novnc procps firefox-esr
 
       # 3. Setup lightweight VNC server
       - name: Setup VNC configurations
@@ -61,9 +60,9 @@ jobs:
           path: |
             ~/.mozilla
             ~/.config/xfce4
-          key: ${{ runner.os }}-xfce-config-${{ github.run_id }}
+          key: ${{ runner.os }}-xfce-docker-config-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-xfce-config-
+            ${{ runner.os }}-xfce-docker-config-
 
       # 5. Launch graphical displays and tunnel output online
       - name: Start GUI & Tunnel
@@ -79,7 +78,7 @@ jobs:
           tmate -S /tmp/tmate.sock wait tmate
           
           echo "========================================================="
-          echo "  DEBIAN DESKTOP ENVIRONMENT INITIATED SUCCESSFULLY      "
+          echo "  DEBIAN DESKTOP ENVIRONMENT INITIATED IN DOCKER         "
           echo "========================================================="
           echo ""
           echo "--- TMATE SSH TERMINAL: ---"
