@@ -1,4 +1,3 @@
-
 name: Debian Remote Desktop with noVNC
 
 on:
@@ -33,7 +32,9 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 xfce4-goodies tightvncserver websockify dbus-x11 \
-            firefox-esr tmate curl wget htop git novnc
+            tmate curl wget htop git novnc
+          # Avoid missing firefox-esr on Ubuntu, fetch standard browser candidates safely
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y firefox || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y chromium-browser || true
 
       # 3. Setup lightweight VNC server
       - name: Setup VNC configurations
