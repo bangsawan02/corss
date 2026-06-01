@@ -1,1 +1,93 @@
 
+name: Debian Remote Desktop with noVNC
+
+on:
+  workflow_dispatch:
+    inputs:
+      vnc_password:
+        description: 'VNC Access Password'
+        required: true
+        default: 'debian123'
+
+jobs:
+  debian-gui:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Caching APT Package Archives for ultra-fast boots
+      - name: Cache APT Archives
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives
+            /var/lib/apt/lists
+          key: ${{ runner.os }}-debian-apt-${{ hashFiles('.github/workflows/main.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-debian-apt-
+
+      # 2. Package installations
+      - name: Install Desktop (XFCE4) & websockify (noVNC)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 xfce4-goodies tightvncserver websockify dbus-x11 \
+            firefox-esr tmate curl wget htop git novnc
+
+      # 3. Setup lightweight VNC server
+      - name: Setup VNC configurations
+        run: |
+          mkdir -p ~/.vnc
+          echo "${{ github.event.inputs.vnc_password || 'debian123' }}" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+          
+          # Write display configuration
+          cat << 'EOF' > ~/.vnc/xstartup
+          #!/bin/sh
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          [ -x /etc/vnc/xstartup ] && exec /etc/vnc/xstartup
+          [ -r $HOME/.Xresources ] && xrdb $HOME/.Xresources
+          startxfce4 &
+          EOF
+          chmod +x ~/.vnc/xstartup
+
+      # 4. Cache user configurations & Firefox states
+      - name: Cache User Configs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.mozilla
+            ~/.config/xfce4
+          key: ${{ runner.os }}-xfce-config-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-xfce-config-
+
+      # 5. Launch graphical displays and tunnel output online
+      - name: Start GUI & Tunnel
+        run: |
+          # Boot display :1 on standard high-color depth VNC
+          vncserver -geometry 1280x800 -depth 24 :1
+          
+          # Link VNC socket with HTML5 noVNC server on port 6080
+          websockify --web /usr/share/novnc 6080 localhost:5901 &
+          
+          # Establish high-speed tmate tunnel
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate
+          
+          echo "========================================================="
+          echo "  DEBIAN DESKTOP ENVIRONMENT INITIATED SUCCESSFULLY      "
+          echo "========================================================="
+          echo ""
+          echo "--- TMATE SSH TERMINAL: ---"
+          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+          echo ""
+          echo "--- TMATE INTERACTIVE WEB HUB: ---"
+          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
+          echo ""
+          echo "========================================================="
+          
+          # Keep runner alive for up to 6 hours or until stopped manually
+          sleep 21600
