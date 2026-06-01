@@ -14,28 +14,28 @@ jobs:
     container:
       image: debian:bookworm-slim
       options: --privileged
+    env:
+      USER: root
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 1. Caching APT Package Archives for ultra-fast boots
-      - name: Cache APT Archives
-        uses: actions/cache@v4
+      - name: Restore APT Archives Cache
+        uses: actions/cache/restore@v4
         with:
           path: /var/cache/apt/archives
           key: ${{ runner.os }}-debian-docker-apt-${{ hashFiles('.github/workflows/main.yml') }}
           restore-keys: |
             ${{ runner.os }}-debian-docker-apt-
 
-      # 2. Package installations inside Debian container
       - name: Install Desktop (XFCE4) & websockify (noVNC)
         run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 xfce4-goodies tightvncserver websockify dbus-x11 \
             tmate curl wget htop git novnc procps firefox-esr
 
-      # 3. Setup lightweight VNC server
       - name: Setup VNC configurations
         run: |
           mkdir -p ~/.vnc
@@ -53,9 +53,8 @@ jobs:
           EOF
           chmod +x ~/.vnc/xstartup
 
-      # 4. Cache user configurations & Firefox states
-      - name: Cache User Configs
-        uses: actions/cache@v4
+      - name: Restore User Configs Cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.mozilla
@@ -64,9 +63,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-xfce-docker-config-
 
-      # 5. Launch graphical displays and tunnel output online
       - name: Start GUI & Tunnel
         run: |
+          export USER=root
           # Boot display :1 on standard high-color depth VNC
           vncserver -geometry 1280x800 -depth 24 :1
           
@@ -91,3 +90,19 @@ jobs:
           
           # Keep runner alive for up to 6 hours or until stopped manually
           sleep 21600
+
+      - name: Save APT Archives Cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-debian-docker-apt-${{ hashFiles('.github/workflows/main.yml') }}
+
+      - name: Save User Configs Cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            ~/.mozilla
+            ~/.config/xfce4
+          key: ${{ runner.os }}-xfce-docker-config-${{ github.run_id }}
