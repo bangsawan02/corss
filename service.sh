@@ -1,16 +1,23 @@
 #/system/bin/sh
-# ksu-frida Stealth Gadget Boot launcher script
+# webfridagadget Boot launcher script
 MODDIR=${0%/*}
-FRIDA_DIR="/data/local/tmp/.aux_stealth"
-mkdir -p "$FRIDA_DIR"
-chmod 771 "$FRIDA_DIR"
-chown system:system "$FRIDA_DIR"
+SEC_DIR="/data/local/tmp/libsec"
+mkdir -p "$SEC_DIR"
+chmod 777 "$SEC_DIR"
+chown system:system "$SEC_DIR"
 
-# Move Gadget library to stealth realm
+# Stage binaries and configs
 if [ -f "$MODDIR/lib/frida-gadget.so" ]; then
-  cp "$MODDIR/lib/frida-gadget.so" "$FRIDA_DIR/ksu_w_core.so"
-  cp "$MODDIR/lib/frida-gadget.config" "$FRIDA_DIR/ksu_w_core.config"
-  chmod 755 "$FRIDA_DIR/ksu_w_core.so"
-  chcon u:object_r:system_file:s0 "$FRIDA_DIR/ksu_w_core.so"
-  chmod 700 "$FRIDA_DIR"
+  cp "$MODDIR/lib/frida-gadget.so" "$SEC_DIR/libsecmon.so"
+  cp "$MODDIR/lib/frida-gadget.config" "$SEC_DIR/libsecmon.so.config"
+  # Also create the legacy name if needed
+  cp "$MODDIR/lib/frida-gadget.config" "$SEC_DIR/libsecmon.config.so"
+  
+  chmod 755 "$SEC_DIR/libsecmon.so"
+  chcon u:object_r:system_file:s0 "$SEC_DIR/libsecmon.so"
+fi
+
+if [ -f "$MODDIR/config.json" ]; then
+  cp "$MODDIR/config.json" "$SEC_DIR/config.json"
+  chmod 666 "$SEC_DIR/config.json"
 fi
