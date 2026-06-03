@@ -12,8 +12,6 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Fetch Core Binaries
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Wajib ada untuk otentikasi gh CLI
       run: |
         # Membuat struktur folder modul
         mkdir -p ./zygisk
@@ -23,14 +21,14 @@ jobs:
         curl -L -o ./lib/frida-gadget.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
         xz -d ./lib/frida-gadget.so.xz
         
-        # 2. Unduh Zygisk Bridge dari lico-n menggunakan GitHub CLI (Anti-404)
-        gh release download v1.9.0 -R lico-n/ZygiskFrida -p "*.zip" --clobber
+        # 2. Unduh Zygisk Bridge menggunakan URL yang benar
+        curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0-release.zip
         
-        # 3. Ekstrak hanya file .so untuk arm64 (meminimalkan ukuran modul sesuai preferensi)
-        unzip -j *.zip "*arm64*.so" -d ./zygisk/
+        # 3. Ekstrak hanya file .so untuk arm64 (meminimalkan ukuran modul)
+        unzip -j zygisk-frida-bridge.zip "*arm64*.so" -d ./zygisk/
         
         # Bersihkan sisa zip unduhan agar tidak masuk ke hasil akhir
-        rm -f *.zip
+        rm -f zygisk-frida-bridge.zip
 
     - name: Compress Module layout to Flashable Zip
       run: zip -r zygisk-frida-stealth.zip . -x "*.git*" "*.github*" "node_modules/*" "*.xz"
