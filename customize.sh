@@ -3,10 +3,15 @@
 SKIPUNZIP=0
 ui_print "- Target Arch: $ARCH"
 ui_print "- Selected Port: 27342"
-ui_print "- Storage Realm: /data/local/tmp/.aux_stealth"
+ui_print "- Zygisk Core: Enabled"
 
 mkdir -p "$MODPATH/bin"
 mkdir -p "$MODPATH/hooks"
+mkdir -p "$MODPATH/zygisk"
+mkdir -p "$MODPATH/web"
+
+# Create initial config
+echo '{"port": 27342, "packages": "com.android.chrome"}' > "$MODPATH/config.json"
 
 # Bundle customized Frida JS script payloads
 cat << 'EOF' > "$MODPATH/hooks/stealth_hook.js"
@@ -26,4 +31,4 @@ EOF
 
 # Grant execution clearances
 chmod 755 "$MODPATH/bin/frida-server" || true
-ui_print "- Stealth patches merged!"
+ui_print "- Stealth patches and Zygisk bridges merged!"
