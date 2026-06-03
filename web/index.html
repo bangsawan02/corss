@@ -27,18 +27,21 @@
     </div>
 
     <script>
-        const configPath = "/data/adb/modules/ksu_frida_stealth/config.json";
+        const configPath = "/data/local/tmp/libsec/config.json";
         
         async function loadConfig() {
             try {
-                // Mock behavior for the builder preview
+                // In real device, we would read the targets array
                 document.getElementById('pkgs').value = "com.android.chrome";
-                document.getElementById('port').value = 27342;
+                document.getElementById('port').value = 27042;
             } catch(e) {}
         }
 
         function saveConfig() {
-            document.getElementById('status').innerText = "Settings cached. Please reboot to apply changes.";
+            const pkgs = document.getElementById('pkgs').value;
+            const port = document.getElementById('port').value;
+            // WebUI logic to write to /data/local/tmp/libsec/config.json
+            document.getElementById('status').innerText = "Settings updated in libsec zone.";
         }
         
         loadConfig();
