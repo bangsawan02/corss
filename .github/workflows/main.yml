@@ -17,17 +17,22 @@ jobs:
         mkdir -p ./zygisk
         mkdir -p ./lib
         
-        # 1. Unduh Frida Gadget (.so) arm64
-        curl -L -o ./lib/frida-gadget.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
-        xz -d ./lib/frida-gadget.so.xz
+        # 1. Unduh Frida Gadget (.so) arm64 & arm
+        curl -L -o ./lib/frida-gadget-arm64.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
+        curl -L -o ./lib/frida-gadget-arm.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm.so.xz
+        xz -d ./lib/*.xz
+        
+        # Rename for service.sh convenience (primary is arm64)
+        mv ./lib/frida-gadget-arm64.so ./lib/frida-gadget.so
         
         # 2. Unduh Zygisk Bridge menggunakan URL yang benar
         curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0-release.zip
         
-        # 3. Ekstrak hanya file .so untuk arm64 (meminimalkan ukuran modul)
+        # 3. Ekstrak file .so untuk arm64 dan arm (v7a)
         unzip -j zygisk-frida-bridge.zip "*arm64*.so" -d ./zygisk/
+        unzip -j zygisk-frida-bridge.zip "*v7a*.so" -d ./zygisk/
         
-        # Bersihkan sisa zip unduhan agar tidak masuk ke hasil akhir
+        # Bersihkan sisa zip unduhan
         rm -f zygisk-frida-bridge.zip
 
     - name: Compress Module layout to Flashable Zip
