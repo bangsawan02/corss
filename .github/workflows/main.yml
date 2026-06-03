@@ -1,8 +1,6 @@
 name: Build Zygisk Frida Stealth
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -22,9 +20,8 @@ jobs:
         xz -d ./bin/frida-server.xz
         chmod +x ./bin/frida-server
         
-        # Fetch Zygisk Bridge from lico-n repository architecture
-        # Note: This is an example fetch, real implementation would point to specific releases
-        curl -L -o ./zygisk/libzygiskfrida.so https://github.com/lico-n/ZygiskFrida/releases/download/v1.0.0/libzygiskfrida.so || echo "Native zygisk bridge missing"
+        # Fetch Zygisk Bridge (libzygiskfrida)
+        curl -L -o ./zygisk/libzygiskfrida.so https://github.com/lico-n/ZygiskFrida/releases/download/v1.0.0/libzygiskfrida.so || echo "Warning: Native zygisk bridge download failed"
 
     - name: Compress Module layout to Flashable Zip
       run: zip -r zygisk-frida-stealth.zip . -x "*.git*" "*.github*" "node_modules/*" "*.xz"
