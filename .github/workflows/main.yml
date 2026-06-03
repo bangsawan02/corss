@@ -1,4 +1,4 @@
-name: Build Zygisk Frida Stealth
+name: Build Zygisk Frida Stealth (Gadget)
 
 on:
   workflow_dispatch:
@@ -13,12 +13,11 @@ jobs:
     
     - name: Fetch Core Binaries
       run: |
-        mkdir -p ./bin
+        mkdir -p ./lib
         mkdir -p ./zygisk
-        # Fetch Frida Server
-        curl -L -o ./bin/frida-server.xz https://github.com/frida/frida/releases/download/16.2.1/frida-server-16.2.1-android-arm64.xz
-        xz -d ./bin/frida-server.xz
-        chmod +x ./bin/frida-server
+        # Fetch Frida Gadget (.so)
+        curl -L -o ./lib/frida-gadget.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
+        xz -d ./lib/frida-gadget.so.xz
         
         # Fetch Zygisk Bridge (libzygiskfrida)
         curl -L -o ./zygisk/libzygiskfrida.so https://github.com/lico-n/ZygiskFrida/releases/download/v1.0.0/libzygiskfrida.so || echo "Warning: Native zygisk bridge download failed"
@@ -29,6 +28,6 @@ jobs:
     - name: Upload Flashable Module Zip to Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: zygisk-frida-module
+        name: zygisk-frida-gadget-module
         path: zygisk-frida-stealth.zip
         retention-days: 7
