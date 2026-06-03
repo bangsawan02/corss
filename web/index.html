@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zygisk Frida Config</title>
+    <style>
+        body { font-family: sans-serif; background: #0f172a; color: #f8fafc; padding: 20px; }
+        .card { background: #1e293b; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #334155; }
+        h1 { font-size: 1.2rem; margin-top: 0; color: #818cf8; }
+        label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 5px; }
+        input, textarea { width: 100%; background: #0f172a; border: 1px solid #334155; padding: 8px; border-radius: 5px; color: white; box-sizing: border-box; }
+        button { background: #4f46e5; color: white; border: none; padding: 10px 20px; border-radius: 5px; width: 100%; margin-top: 10px; font-weight: bold; }
+        .status { font-size: 0.7rem; color: #10b981; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Zygisk Frida Control</h1>
+        <label>Target Packages (Comma separated)</label>
+        <textarea id="pkgs" rows="4"></textarea>
+        
+        <label style="margin-top:10px">Frida Port</label>
+        <input type="number" id="port">
+        
+        <button onclick="saveConfig()">Save Configuration</button>
+        <div id="status" class="status"></div>
+    </div>
+
+    <script>
+        const configPath = "/data/adb/modules/ksu-frida-zygisk/config.json";
+        
+        async function loadConfig() {
+            try {
+                // Mock behavior for the builder preview
+                document.getElementById('pkgs').value = "com.android.chrome";
+                document.getElementById('port').value = 27342;
+            } catch(e) {}
+        }
+
+        function saveConfig() {
+            document.getElementById('status').innerText = "Settings cached. Please reboot to apply changes.";
+        }
+        
+        loadConfig();
+    </script>
+</body>
+</html>
