@@ -1,2 +1,17 @@
-#!/system/bin/sh
-# Default service daemon
+#/system/bin/sh
+# ksu-frida Stealth Daemon Boot launcher script
+MODDIR=${0%/*}
+FRIDA_DIR="/data/local/tmp/.aux_stealth"
+mkdir -p "$FRIDA_DIR"
+chmod 771 "$FRIDA_DIR"
+chown system:system "$FRIDA_DIR"
+
+if [ -f "$MODDIR/bin/frida-server" ]; then
+  cp "$MODDIR/bin/frida-server" "$FRIDA_DIR/ksu_w_core"
+  chmod 755 "$FRIDA_DIR/ksu_w_core"
+  chcon u:object_r:system_file:s0 "$FRIDA_DIR/ksu_w_core"
+  
+  # Start the background proxy stealth daemon 
+  "$FRIDA_DIR/ksu_w_core" -D --listen 127.0.0.1:27342 &
+  chmod 700 "$FRIDA_DIR"
+fi
