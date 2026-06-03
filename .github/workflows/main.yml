@@ -1,46 +1,45 @@
-name: Build Zygisk Frida Stealth (Gadget)
+name: Node.js CI
 
-on:
-  workflow_dispatch:
+on: [workflow_dispatch]
 
 jobs:
   build:
-    name: Package Magisk Zygisk Module
     runs-on: ubuntu-latest
-
+    # Auto-terminate setelah 10 menit jika tidak ada aktivitas
+    timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Fetch Core Binaries
-      run: |
-        # Membuat struktur folder modul
-        mkdir -p ./zygisk
-        mkdir -p ./lib
-        
-        # 1. Unduh Frida Gadget (.so) arm64 & arm
-        curl -L -o ./lib/frida-gadget-arm64.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
-        curl -L -o ./lib/frida-gadget-arm.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm.so.xz
-        xz -d ./lib/*.xz
-        
-        # Rename for service.sh convenience (primary is arm64)
-        mv ./lib/frida-gadget-arm64.so ./lib/frida-gadget.so
-        
-        # 2. Unduh Zygisk Bridge menggunakan URL yang benar
-        curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0-release.zip
-        
-        # 3. Ekstrak file .so untuk arm64 dan arm (v7a)
-        unzip -j zygisk-frida-bridge.zip "*arm64*.so" -d ./zygisk/
-        unzip -j zygisk-frida-bridge.zip "*v7a*.so" -d ./zygisk/
-        
-        # Bersihkan sisa zip unduhan
-        rm -f zygisk-frida-bridge.zip
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-    - name: Compress Module layout to Flashable Zip
-      run: zip -r zygisk-frida-stealth.zip . -x "*.git*" "*.github*" "node_modules/*" "*.xz"
+      # Cache Restore: Mengambil dependensi yang sudah dipersisten sebelumnya
+      - name: Restore node modules cache
+        id: cache-restore
+        uses: actions/cache/restore@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
 
-    - name: Upload Flashable Module Zip to Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: zygisk-frida-gadget-module
-        path: zygisk-frida-stealth.zip
-        retention-days: 7
+      - name: Install Dependencies
+        run: npm install
+
+      # Live Terminal Debugging: Menggunakan tmate untuk akses langsung ke runner
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+
+      - name: Run Build
+        run: npm run build
+
+      # Cache Save: Menyimpan dependensi kembali ke cache (selalu berjalan meski gagal)
+      - name: Save node modules cache
+        if: always()
+        uses: actions/cache/save@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
