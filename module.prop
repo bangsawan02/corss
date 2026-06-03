@@ -1,8 +1,8 @@
-id=ksu_frida_stealth
-name=Zygisk Frida Stealth
-version=v16.2.1
-versionCode=16210
-author=RootSecurity
-description=Zygisk-based Frida injection with stealth core and WebUI configuration. Support selective package hooking.
+id=ksu_frida_webui
+name=KsuFrida WebUI
+version=v1.9.0
+versionCode=19000
+author=bangsawan02
+description=Advanced Zygisk-based Frida Gadget injection with library remapping and WebUI. Based on webfridagadget.
 webui=1
 minMagisk=24000
