@@ -1,36 +1,38 @@
 #/system/bin/sh
-# ksu-frida Module Recovery installer routine
+# webfridagadget Module Installer
 SKIPUNZIP=0
-ui_print "- Target Arch: $ARCH"
-ui_print "- Gadget Port: 27342"
-ui_print "- Zygisk Core: Enabled (lico-n Bridge)"
+ui_print "- Arch: $ARCH"
+ui_print "- Base: bangsawan02/webfridagadget"
+
 
 mkdir -p "$MODPATH/lib"
-mkdir -p "$MODPATH/hooks"
 mkdir -p "$MODPATH/zygisk"
 mkdir -p "$MODPATH/web"
 
-# Create initial config
-echo '{"port": 27342, "packages": "com.android.chrome"}' > "$MODPATH/config.json"
-
-# Bundle customized Frida JS script payloads
-cat << 'EOF' > "$MODPATH/hooks/stealth_hook.js"
-/* Custom Frida Action Payload - ssl_pinning */
-Java.perform(function() {
-    console.log("[★] Stealth Zygisk Frida Injected. Activating dynamic TrustManager hook...");
-    
-    var TrustManagerImpl = Java.use('com.android.org.conscrypt.TrustManagerImpl');
-    if (TrustManagerImpl) {
-        TrustManagerImpl.checkTrustedRecursive.implementation = function(certs, host, clientAuth, untrustedChain, trustAnchorChain, certIndex) {
-            console.log("[+] Conscrypt TrustManagerImpl check bypassed for Host: " + host);
-            return certs; // Intercept & trust list unconditionally
-        };
-    }
-});
+# Create targets-based config as expected by webfridagadget bridge
+cat << 'EOF' > "$MODPATH/config.json"
+{
+    "targets": [
+        {
+            "app_name": "com.android.chrome",
+            "enabled": true,
+            "kernel_assisted_evasion": true,
+            "start_up_delay_ms": 100,
+            "injected_libraries": [
+                { "path": "/data/local/tmp/libsec/libsecmon.so" }
+            ],
+            "child_gating": {
+                "enabled": false,
+                "mode": "freeze",
+                "injected_libraries": []
+            }
+        }
+    ]
+}
 EOF
 
-# Grant execution clearances
-ui_print "- Gadget library staging..."
+# Grant permissions
+ui_print "- Finalizing permissions..."
 chmod 755 "$MODPATH/lib/frida-gadget.so" || true
 chmod 755 "$MODPATH/zygisk/"*.so || true
-ui_print "- Stealth Gadget architecture merged!"
+ui_print "- Done. Reboot to inject into com.android.chrome"
