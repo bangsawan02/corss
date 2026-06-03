@@ -20,10 +20,12 @@ jobs:
         xz -d ./lib/frida-gadget.so.xz
         
         # Fetch Zygisk Bridge (libzygiskfrida) from lico-n
-        # Using v0.2.0 which is a known release
-        curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v0.2.0/ZygiskFrida-v0.2.0.zip
+        # Using v1.9.0 which is the latest stable release
+        curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0.zip
         unzip zygisk-frida-bridge.zip -d zygisk_tmp
-        cp zygisk_tmp/zygisk/*.so ./zygisk/
+        mkdir -p ./zygisk
+        # Copy architecture specific libraries to module structure
+        cp -r zygisk_tmp/zygisk/* ./zygisk/
         rm -rf zygisk_tmp zygisk-frida-bridge.zip
 
     - name: Compress Module layout to Flashable Zip
