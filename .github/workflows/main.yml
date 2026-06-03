@@ -1,108 +1,31 @@
-name: Debian Remote Desktop with noVNC (Docker)
+name: Build ksu-frida Stealth Module
 
 on:
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      vnc_password:
-        description: 'VNC Access Password'
-        required: true
-        default: 'debian123'
 
 jobs:
-  debian-gui:
+  build:
+    name: Package Magisk KernelSU Module
     runs-on: ubuntu-latest
-    container:
-      image: debian:bookworm-slim
-      options: --privileged
-    env:
-      USER: root
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    
+    - name: Fetch Official Stealth Frida Server
+      run: |
+        mkdir -p ./bin
+        curl -L -o ./bin/frida-server.xz https://github.com/frida/frida/releases/download/16.2.1/frida-server-16.2.1-android-arm64.xz
+        xz -d ./bin/frida-server.xz
+        chmod +x ./bin/frida-server
 
-      - name: Restore APT Archives Cache
-        uses: actions/cache/restore@v4
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-debian-docker-apt-${{ hashFiles('.github/workflows/main.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-debian-docker-apt-
+    - name: Compress Module layout to Flashable Zip
+      run: zip -r ksu-frida-zygisk-stealth.zip . -x "*.git*" "*.github*" "node_modules/*" "*.xz"
 
-      - name: Install Desktop (XFCE4) & websockify (noVNC)
-        run: |
-          rm -f /etc/apt/apt.conf.d/docker-clean
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            xfce4 xfce4-goodies tightvncserver websockify dbus-x11 \
-            tmate curl wget htop git novnc procps firefox-esr
-
-      - name: Setup VNC configurations
-        run: |
-          mkdir -p ~/.vnc
-          echo "${{ github.event.inputs.vnc_password || 'debian123' }}" | vncpasswd -f > ~/.vnc/passwd
-          chmod 600 ~/.vnc/passwd
-          
-          # Write display configuration
-          cat << 'EOF' > ~/.vnc/xstartup
-          #!/bin/sh
-          unset SESSION_MANAGER
-          unset DBUS_SESSION_BUS_ADDRESS
-          [ -x /etc/vnc/xstartup ] && exec /etc/vnc/xstartup
-          [ -r $HOME/.Xresources ] && xrdb $HOME/.Xresources
-          startxfce4 &
-          EOF
-          chmod +x ~/.vnc/xstartup
-
-      - name: Restore User Configs Cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.mozilla
-            ~/.config/xfce4
-          key: ${{ runner.os }}-xfce-docker-config-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-xfce-docker-config-
-
-      - name: Start GUI & Tunnel
-        run: |
-          export USER=root
-          # Boot display :1 on standard high-color depth VNC
-          vncserver -geometry 1280x800 -depth 24 :1
-          
-          # Link VNC socket with HTML5 noVNC server on port 6080
-          websockify --web /usr/share/novnc 6080 localhost:5901 &
-          
-          # Establish high-speed tmate tunnel
-          tmate -S /tmp/tmate.sock new-session -d
-          tmate -S /tmp/tmate.sock wait tmate
-          
-          echo "========================================================="
-          echo "  DEBIAN DESKTOP ENVIRONMENT INITIATED IN DOCKER         "
-          echo "========================================================="
-          echo ""
-          echo "--- TMATE SSH TERMINAL: ---"
-          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
-          echo ""
-          echo "--- TMATE INTERACTIVE WEB HUB: ---"
-          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
-          echo ""
-          echo "========================================================="
-          
-          # Keep runner alive for up to 6 hours or until stopped manually
-          sleep 21600
-
-      - name: Save APT Archives Cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-debian-docker-apt-${{ hashFiles('.github/workflows/main.yml') }}
-
-      - name: Save User Configs Cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: |
-            ~/.mozilla
-            ~/.config/xfce4
-          key: ${{ runner.os }}-xfce-docker-config-${{ github.run_id }}
+    - name: Upload Flashable Module Zip to Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ksu-frida-module
+        path: ksu-frida-zygisk-stealth.zip
+        retention-days: 7
