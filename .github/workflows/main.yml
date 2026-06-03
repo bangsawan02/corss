@@ -21,7 +21,7 @@ jobs:
         
         # Fetch Zygisk Bridge (libzygiskfrida) from lico-n
         # Using v1.9.0 which is the latest stable release
-        curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0.zip
+        curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0-release.zip
         unzip zygisk-frida-bridge.zip -d zygisk_tmp
         mkdir -p ./zygisk
         # Copy architecture specific libraries to module structure
