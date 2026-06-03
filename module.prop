@@ -1,0 +1,4 @@
+id=ksu-frida-zygisk
+name=KernelSU Frida Zygisk Injection
+version=v16.2.1-stealth
+author=RootSecurity / bangsawan02
