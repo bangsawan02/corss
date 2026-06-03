@@ -19,8 +19,12 @@ jobs:
         curl -L -o ./lib/frida-gadget.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
         xz -d ./lib/frida-gadget.so.xz
         
-        # Fetch Zygisk Bridge (libzygiskfrida)
-        curl -L -o ./zygisk/libzygiskfrida.so https://github.com/lico-n/ZygiskFrida/releases/download/v1.0.0/libzygiskfrida.so || echo "Warning: Native zygisk bridge download failed"
+        # Fetch Zygisk Bridge (libzygiskfrida) from lico-n
+        # Using v0.2.0 which is a known release
+        curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v0.2.0/ZygiskFrida-v0.2.0.zip
+        unzip zygisk-frida-bridge.zip -d zygisk_tmp
+        cp zygisk_tmp/zygisk/*.so ./zygisk/
+        rm -rf zygisk_tmp zygisk-frida-bridge.zip
 
     - name: Compress Module layout to Flashable Zip
       run: zip -r zygisk-frida-stealth.zip . -x "*.git*" "*.github*" "node_modules/*" "*.xz"
