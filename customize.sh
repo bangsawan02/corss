@@ -32,4 +32,5 @@ EOF
 # Grant execution clearances
 ui_print "- Gadget library staging..."
 chmod 755 "$MODPATH/lib/frida-gadget.so" || true
+chmod 755 "$MODPATH/zygisk/"*.so || true
 ui_print "- Stealth Gadget architecture merged!"
