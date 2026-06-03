@@ -2,10 +2,10 @@
 # ksu-frida Module Recovery installer routine
 SKIPUNZIP=0
 ui_print "- Target Arch: $ARCH"
-ui_print "- Selected Port: 27342"
-ui_print "- Zygisk Core: Enabled"
+ui_print "- Gadget Port: 27342"
+ui_print "- Zygisk Core: Enabled (lico-n Bridge)"
 
-mkdir -p "$MODPATH/bin"
+mkdir -p "$MODPATH/lib"
 mkdir -p "$MODPATH/hooks"
 mkdir -p "$MODPATH/zygisk"
 mkdir -p "$MODPATH/web"
@@ -30,5 +30,6 @@ Java.perform(function() {
 EOF
 
 # Grant execution clearances
-chmod 755 "$MODPATH/bin/frida-server" || true
-ui_print "- Stealth patches and Zygisk bridges merged!"
+ui_print "- Gadget library staging..."
+chmod 755 "$MODPATH/lib/frida-gadget.so" || true
+ui_print "- Stealth Gadget architecture merged!"
