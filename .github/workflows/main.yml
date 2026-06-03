@@ -13,30 +13,25 @@ jobs:
     
     - name: Fetch Core Binaries
       run: |
-        mkdir -p ./lib
+        # Membuat struktur folder modul
         mkdir -p ./zygisk
-        # Fetch Frida Gadget (.so)
+        mkdir -p ./lib
+        
+        # 1. Unduh Frida Gadget (.so) arm64
         curl -L -o ./lib/frida-gadget.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
         xz -d ./lib/frida-gadget.so.xz
         
-        # Fetch Zygisk Bridge (libzygiskfrida) from lico-n
-        # Using v1.9.0 which is the latest stable release
+        # 2. Unduh Zygisk Bridge menggunakan URL yang benar
         curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0-release.zip
-        unzip zygisk-frida-bridge.zip -d zygisk_tmp
-        mkdir -p ./zygisk
-        # Copy architecture specific libraries to module structure
-        cp -r zygisk_tmp/zygisk/* ./zygisk/
-        rm -rf zygisk_tmp zygisk-frida-bridge.zip
+        
+        # 3. Ekstrak hanya file .so untuk arm64 (meminimalkan ukuran modul)
+        unzip -j zygisk-frida-bridge.zip "*arm64*.so" -d ./zygisk/
+        
+        # Bersihkan sisa zip unduhan agar tidak masuk ke hasil akhir
+        rm -f zygisk-frida-bridge.zip
 
     - name: Compress Module layout to Flashable Zip
-      run: |
-        # Explicitly zip only required module components to avoid repo trash
-        zip -r zygisk-frida-stealth.zip module.prop service.sh customize.sh web/ lib/ zygisk/ hooks/ config.json || true
-        # Verify if zip was created, if not, handle error
-        if [ ! -f zygisk-frida-stealth.zip ]; then
-          echo "Error: Standard zipping failed, attempting catch-all..."
-          zip -r zygisk-frida-stealth.zip . -x "*.xz" "*.git*" "*.github*" "node_modules/*"
-        fi
+      run: zip -r zygisk-frida-stealth.zip . -x "*.git*" "*.github*" "node_modules/*" "*.xz"
 
     - name: Upload Flashable Module Zip to Artifacts
       uses: actions/upload-artifact@v4
