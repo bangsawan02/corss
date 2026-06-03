@@ -13,20 +13,23 @@ jobs:
     
     - name: Fetch Core Binaries
       run: |
-        mkdir -p ./lib
+        # Buat struktur folder modul Magisk yang benar
         mkdir -p ./zygisk
-        # Fetch Frida Gadget (.so)
+        mkdir -p ./lib
+        
+        # 1. Ambil Frida Gadget (.so)
         curl -L -o ./lib/frida-gadget.so.xz https://github.com/frida/frida/releases/download/16.2.1/frida-gadget-16.2.1-android-arm64.so.xz
         xz -d ./lib/frida-gadget.so.xz
         
-        # Fetch Zygisk Bridge (libzygiskfrida) from lico-n
-        # Using v1.9.0 which is the latest stable release
+        # 2. Ambil Zygisk Bridge dari lico-n
         curl -L -o zygisk-frida-bridge.zip https://github.com/lico-n/ZygiskFrida/releases/download/v1.9.0/ZygiskFrida-v1.9.0.zip
-        unzip zygisk-frida-bridge.zip -d zygisk_tmp
-        mkdir -p ./zygisk
-        # Copy architecture specific libraries to module structure
-        cp -r zygisk_tmp/zygisk/* ./zygisk/
-        rm -rf zygisk_tmp zygisk-frida-bridge.zip
+        
+        # Ekstrak langsung file .so spesifik arm64 untuk menghemat ruang dan menjaga ukuran file tetap kecil
+        # Rilis ZygiskFrida biasanya menyimpan library zygisk di dalam folder zygisk/ di dalam zip-nya
+        unzip -j zygisk-frida-bridge.zip "zygisk/arm64-v8a.so" -d ./zygisk/
+        
+        # Bersihkan file zip unduhan agar tidak masuk ke artifact
+        rm -f zygisk-frida-bridge.zip
 
     - name: Compress Module layout to Flashable Zip
       run: zip -r zygisk-frida-stealth.zip . -x "*.git*" "*.github*" "node_modules/*" "*.xz"
