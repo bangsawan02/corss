@@ -1,0 +1,7 @@
+{
+  "interaction": {
+    "type": "script",
+    "path": "/data/local/tmp/custom-frida-script.js",
+    "on_load": "resume"
+  }
+}

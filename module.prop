@@ -1,0 +1,6 @@
+id=zygisk-fridagadget
+name=Zygisk Frida Gadget
+version=v1.0.0
+versionCode=100
+author=telokuh
+description=Injects Frida Gadget dynamically into targeted specialized Android user applications.
