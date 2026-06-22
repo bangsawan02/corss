@@ -39,8 +39,11 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion '1.5.8'
     }
+    aaptOptions {
+        noCompress 'img', 'xz'
+    }
     androidResources {
-        noCompress += "img"
+        noCompress += ["img", "xz"]
     }
     packaging {
         resources {
