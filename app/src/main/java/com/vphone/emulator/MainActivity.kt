@@ -43,14 +43,14 @@ class MainActivity : ComponentActivity() {
                 ) {
                     VPhoneEmulatorShell(
                         appName = "VPhoneGaga Pro",
-                        enableFrida = true,
-                        enableTerminal = true,
-                        enableXposed = true,
-                        romType = "aosp_11_gapps",
-                        customRomUrl = "https://github.com/phhusson/treble_experimentations/releases/download/v313/system-roar-arm64-ab-gapps.img.xz",
+                        enableFrida = false,
+                        enableTerminal = false,
+                        enableXposed = false,
+                        romType = "builtin_rom_embedded",
+                        customRomUrl = "embedded://system.img",
                         systemPartitionSizeMb = 2048,
                         enableGApps = true,
-                        enableMagiskSu = false
+                        enableMagiskSu = true
                     )
                 }
             }
@@ -170,9 +170,13 @@ fun VMSpecsScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Target ROM: " + when(romType) {
+                        "builtin_rom_embedded" -> "Embedded Core AOSP 10 (Local Pre-built)"
+                        "aosp_12_vanilla" -> "AOSP 12.1 GSI (Vanilla Stable)"
+                        "aosp_11_gapps" -> "AOSP 11.0 Play Store (GApps Integrated)"
+                        "lineageos_20" -> "LineageOS 20.0 Light GSI (Fluid Custom)"
+                        "lineageos_18" -> "LineageOS 18.1 Secure GSI"
                         "aosp_10_mini" -> "AOSP Android 10 (Minimal Vanilla)"
-                        "aosp_9_gapps" -> "AOSP Android 9.0 (With Play Services)"
-                        else -> "Custom ROM image: $customRomUrl"
+                        else -> "Custom Image: $customRomUrl"
                     }, fontWeight = FontWeight.Medium)
                     
                     Text("System Allocation: 2048 MB", fontSize = 13.sp, color = Color.LightGray)

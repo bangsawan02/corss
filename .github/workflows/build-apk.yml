@@ -39,6 +39,48 @@ jobs:
           java -version
           echo "Android Home path: $ANDROID_HOME"
 
+      - name: Prepare Assets directory
+        run: mkdir -p app/src/main/assets
+
+      - name: Cache ROM Image
+        id: cache-rom
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: app/src/main/assets/system.img
+          key: ${{ runner.os }}-rom-builtin_rom_embedded
+
+      - name: Download and Unpack Selected ROM System Image
+        if: steps.cache-rom.outputs.cache-hit != 'true'
+        run: |
+          ROM_URL="https://archive.org/download/aosp-10-vphonegaga/system-aosp-10-arm64.img"
+          echo "Target ROM URL: $ROM_URL"
+          
+          if [[ ! "$ROM_URL" =~ ^https?:// ]]; then
+            echo "URL is not a remote link. Writing lightweight dummy placeholder..."
+            echo "VPhoneGaga Core Emulator Embedded ROM Placeholder" > app/src/main/assets/system.img
+          else
+            echo "Downloading system partition image..."
+            curl -L -o temp_rom "$ROM_URL"
+            
+            # Detect format and extract
+            if [[ "$ROM_URL" == *.xz ]]; then
+              echo "Decompressing xz archive..."
+              xz -d -c temp_rom > app/src/main/assets/system.img
+              rm temp_rom
+            elif [[ "$ROM_URL" == *.zip ]]; then
+              echo "Extracting zip archive..."
+              unzip -p temp_rom > app/src/main/assets/system.img
+              rm temp_rom
+            else
+              echo "Direct raw image file detected."
+              mv temp_rom app/src/main/assets/system.img
+            fi
+          fi
+          
+          echo "Assets list:"
+          ls -lh app/src/main/assets/
+
       - name: Generate Proper Gradle Wrapper
         run: |
           gradle wrapper --gradle-version 8.5
