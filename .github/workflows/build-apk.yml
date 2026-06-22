@@ -39,19 +39,14 @@ jobs:
           java -version
           echo "Android Home path: $ANDROID_HOME"
 
-      - name: Change Gradle Permission
-        run: chmod +x gradlew || true
+      - name: Generate Proper Gradle Wrapper
+        run: |
+          gradle wrapper --gradle-version 8.5
+          chmod +x gradlew
 
       - name: Compile and Build debug APK
         run: |
-          # Use standard gradle setup if gradlew script was just stubbed
-          if [ -f "gradlew" ]; then
-             echo "Executing project build using Gradle wrapper..."
-             ./gradlew assembleDebug --no-daemon
-          else
-             echo "Using System Gradle build..."
-             gradle assembleDebug --no-daemon
-          fi
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload Final APK Release
         uses: actions/upload-artifact@v4

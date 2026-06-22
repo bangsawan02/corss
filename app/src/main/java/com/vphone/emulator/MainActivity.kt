@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
                         enableTerminal = true,
                         enableSandbox = true,
                         enableXposed = true,
-                        initialUrls = listOf("https://google.com", "https://github.com")
+                        initialUrls = listOf("https://google.com", "https://github.com", "https://whatismybrowser.com")
                     )
                 }
             }
