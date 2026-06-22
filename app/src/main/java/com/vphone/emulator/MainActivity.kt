@@ -45,9 +45,12 @@ class MainActivity : ComponentActivity() {
                         appName = "VPhoneGaga Pro",
                         enableFrida = true,
                         enableTerminal = true,
-                        enableSandbox = true,
                         enableXposed = true,
-                        initialUrls = listOf("https://google.com", "https://github.com", "https://whatismybrowser.com")
+                        romType = "aosp_11_gapps",
+                        customRomUrl = "https://github.com/phhusson/treble_experimentations/releases/download/v313/system-roar-arm64-ab-gapps.img.xz",
+                        systemPartitionSizeMb = 2048,
+                        enableGApps = true,
+                        enableMagiskSu = false
                     )
                 }
             }
@@ -61,9 +64,12 @@ fun VPhoneEmulatorShell(
     appName: String,
     enableFrida: Boolean,
     enableTerminal: Boolean,
-    enableSandbox: Boolean,
     enableXposed: Boolean,
-    initialUrls: List<String>
+    romType: String,
+    customRomUrl: String,
+    systemPartitionSizeMb: Int,
+    enableGApps: Boolean,
+    enableMagiskSu: Boolean
 ) {
     var selectedTab by remember { mutableStateOf(0) }
 
@@ -73,7 +79,7 @@ fun VPhoneEmulatorShell(
                 title = { 
                     Column {
                         Text(appName, fontWeight = FontWeight.Bold, color = Color(0xFF03DAC5))
-                        Text("Root Sandboxed Container • Pro Edition", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text("Root ROM Emulator • Pro Edition", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -82,27 +88,19 @@ fun VPhoneEmulatorShell(
             )
         },
         bottomBar = {
-            NavigationBar(
-                containerColor = Color(0xFF1A1A1A)
-            ) {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Text("💻", fontSize = 18.sp) },
-                    label = { Text("VM Status") }
-                )
-                if (enableSandbox) {
+            if (enableTerminal) {
+                NavigationBar(
+                    containerColor = Color(0xFF1A1A1A)
+                ) {
+                    NavigationBarItem(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        icon = { Text("💻", fontSize = 18.sp) },
+                        label = { Text("VM Status") }
+                    )
                     NavigationBarItem(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
-                        icon = { Text("📦", fontSize = 18.sp) },
-                        label = { Text("Sandboxes") }
-                    )
-                }
-                if (enableTerminal) {
-                    NavigationBarItem(
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
                         icon = { Text("🐚", fontSize = 18.sp) },
                         label = { Text("Bash") }
                     )
@@ -111,20 +109,50 @@ fun VPhoneEmulatorShell(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            when (selectedTab) {
-                0 -> VMSpecsScreen(enableFrida, enableXposed)
-                1 -> if (enableSandbox) SandboxScreen(initialUrls) else Text("Sandbox Disabled")
-                2 -> if (enableTerminal) TerminalConsoleScreen() else Text("Terminal Disabled")
+            if (selectedTab == 0) {
+                VMSpecsScreen(
+                    enableFrida = enableFrida,
+                    enableXposed = enableXposed,
+                    romType = romType,
+                    customRomUrl = customRomUrl,
+                    systemPartitionSizeMb = systemPartitionSizeMb,
+                    enableGApps = enableGApps,
+                    enableMagiskSu = enableMagiskSu
+                )
+            } else {
+                if (enableTerminal) TerminalConsoleScreen() else Text("Terminal Disabled")
             }
         }
     }
 }
 
 @Composable
-fun VMSpecsScreen(enableFrida: Boolean, enableXposed: Boolean) {
-    var isRooted by remember { mutableStateOf(true) }
+fun VMSpecsScreen(
+    enableFrida: Boolean,
+    enableXposed: Boolean,
+    romType: String,
+    customRomUrl: String,
+    systemPartitionSizeMb: Int,
+    enableGApps: Boolean,
+    enableMagiskSu: Boolean
+) {
+    var isRooted by remember { mutableStateOf(enableMagiskSu) }
     var xposedActive by remember { mutableStateOf(enableXposed) }
     var fridaActive by remember { mutableStateOf(enableFrida) }
+    var gappsActive by remember { mutableStateOf(enableGApps) }
+    var flashStep by remember { mutableStateOf("Ready") } // Ready -> Downloading OS -> Verifying MD5 -> Splitting Blocks -> Flashing System Partition -> Finished
+    var flashProgress by remember { mutableStateOf(0f) }
+
+    LaunchedEffect(flashStep) {
+        if (flashStep == "Flashing Custom AOSP ROM Image...") {
+            flashProgress = 0f
+            while (flashProgress < 1.0f) {
+                kotlinx.coroutines.delay(150)
+                flashProgress += 0.08f
+            }
+            flashStep = "System flashed successfully!"
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -132,6 +160,58 @@ fun VMSpecsScreen(enableFrida: Boolean, enableXposed: Boolean) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            Text("AOSP CUSTOM ROM STATUS", fontWeight = FontWeight.Bold, color = Color(0xFF03DAC5), fontSize = 14.sp)
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Target ROM: " + when(romType) {
+                        "aosp_10_mini" -> "AOSP Android 10 (Minimal Vanilla)"
+                        "aosp_9_gapps" -> "AOSP Android 9.0 (With Play Services)"
+                        else -> "Custom ROM image: $customRomUrl"
+                    }, fontWeight = FontWeight.Medium)
+                    
+                    Text("System Allocation: 2048 MB", fontSize = 13.sp, color = Color.LightGray)
+                    Text("Google Play Services / GApps: " + if(gappsActive) "Pre-loaded" else "Disabled", fontSize = 13.sp, color = Color.Gray)
+                    
+                    if (flashStep == "Ready") {
+                        Button(
+                            onClick = { flashStep = "Flashing Custom AOSP ROM Image..." },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF03DAC5)),
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                        ) {
+                            Text("Reinstall / Flash ROM", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    } else if (flashStep == "Flashing Custom AOSP ROM Image...") {
+                        Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                            Text("Reflashing ROM: ${(flashProgress * 100).toInt()}% Done", fontSize = 12.sp, color = Color(0xFF03DAC5))
+                            LinearProgressIndicator(
+                                progress = flashProgress,
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                color = Color(0xFF03DAC5),
+                                trackColor = Color.DarkGray
+                            )
+                        }
+                    } else {
+                        Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                            Text(flashStep, fontSize = 13.sp, color = Color.Green, fontWeight = FontWeight.Bold)
+                            Button(
+                                onClick = { flashStep = "Ready" },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Gray),
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                            ) {
+                                Text("Acknowledge", color = Color.White)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             Text("VIRTUAL HARDWARE SPECIFICATIONS", fontWeight = FontWeight.Bold, color = Color.LightGray, fontSize = 14.sp)
         }
@@ -141,8 +221,8 @@ fun VMSpecsScreen(enableFrida: Boolean, enableXposed: Boolean) {
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("System Architecture: arm64-v8a / armeabi-v7a", fontSize = 14.sp, fontFamily = FontFamily.Monospace)
-                    Text("Android Version: v12.0 (SDK 31)", fontSize = 14.sp, fontFamily = FontFamily.Monospace)
+                    Text("System Architecture: arm64-v8a / x86_64 Direct Core", fontSize = 14.sp, fontFamily = FontFamily.Monospace)
+                    Text("Android Version: v10.0 - 12.0 (Dual-Kernel Sandbox)", fontSize = 14.sp, fontFamily = FontFamily.Monospace)
                     Text("Memory Allocated: 4096MB (RAM Burst)", fontSize = 14.sp, fontFamily = FontFamily.Monospace)
                     Text("Display Overlay Server: Active (Port 5901)", fontSize = 14.sp, fontFamily = FontFamily.Monospace)
                 }
@@ -165,8 +245,8 @@ fun VMSpecsScreen(enableFrida: Boolean, enableXposed: Boolean) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Superuser (Root Mount)", fontWeight = FontWeight.Bold)
-                            Text("Simulate pre-rooted su binary", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Text("Superuser (MagiskSU Root Mount)", fontWeight = FontWeight.Bold)
+                            Text("Simulate pre-rooted su binary and root privileges", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         }
                         Switch(checked = isRooted, onCheckedChange = { isRooted = it })
                     }
@@ -200,67 +280,6 @@ fun VMSpecsScreen(enableFrida: Boolean, enableXposed: Boolean) {
     }
 }
 
-@Composable
-fun SandboxScreen(urls: List<String>) {
-    var activeUrlIndex by remember { mutableStateOf(0) }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF1A1A1A))
-                .padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            urls.forEachIndexed { index, url ->
-                val isSelected = activeUrlIndex == index
-                Box(
-                    modifier = Modifier
-                        .background(if (isSelected) Color(0xFF03DAC5) else Color.DarkGray, RoundedCornerShape(8.dp))
-                        .clickable { activeUrlIndex = index }
-                        .padding(horizontal = 14.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "Sandbox ${index + 1}",
-                        color = if (isSelected) Color.Black else Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                }
-            }
-        }
-        
-        AndroidView(
-            factory = { context ->
-                WebView(context).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.databaseEnabled = true
-                    settings.userAgentString = "Mozilla/5.0 (VPhoneGaga Core Sandbox Engine v1)"
-                    
-                    // Root sandboxing trick: partition cookies separate from standard browser instances
-                    val cookieManager = CookieManager.getInstance()
-                    cookieManager.setAcceptCookie(true)
-                    cookieManager.setAcceptThirdPartyCookies(this, true)
-                    
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            super.onPageFinished(view, url)
-                        }
-                    }
-                    loadUrl(urls.getOrNull(activeUrlIndex) ?: "https://google.com")
-                }
-            },
-            update = { webView ->
-                val targetUrl = urls.getOrNull(activeUrlIndex) ?: "https://google.com"
-                if (webView.url != targetUrl) {
-                    webView.loadUrl(targetUrl)
-                }
-            },
-            modifier = Modifier.fillMaxSize().weight(1f)
-        )
-    }
-}
 
 @Composable
 fun TerminalConsoleScreen() {
