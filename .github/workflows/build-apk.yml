@@ -48,12 +48,12 @@ jobs:
         if: always()
         with:
           path: app/src/main/assets/system.img
-          key: ${{ runner.os }}-rom-builtin_rom_embedded
+          key: ${{ runner.os }}-rom-aosp_11_gapps
 
       - name: Download and Unpack Selected ROM System Image
         if: steps.cache-rom.outputs.cache-hit != 'true'
         run: |
-          ROM_URL="https://github.com/phhusson/treble_experimentations/releases/download/v222/system-quack-arm64-ab-vanilla.img.xz"
+          ROM_URL="https://github.com/phhusson/treble_experimentations/releases/download/v313/system-roar-arm64-ab-gapps.img.xz"
           echo "Target ROM URL: $ROM_URL"
           
           if [[ ! "$ROM_URL" =~ ^https?:// ]]; then

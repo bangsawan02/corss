@@ -43,14 +43,14 @@ class MainActivity : ComponentActivity() {
                 ) {
                     VPhoneEmulatorShell(
                         appName = "VPhoneGaga Pro",
-                        enableFrida = true,
-                        enableTerminal = true,
-                        enableXposed = true,
-                        romType = "builtin_rom_embedded",
-                        customRomUrl = "embedded://system.img",
+                        enableFrida = false,
+                        enableTerminal = false,
+                        enableXposed = false,
+                        romType = "aosp_11_gapps",
+                        customRomUrl = "https://github.com/phhusson/treble_experimentations/releases/download/v313/system-roar-arm64-ab-gapps.img.xz",
                         systemPartitionSizeMb = 2048,
-                        enableGApps = false,
-                        enableMagiskSu = true
+                        enableGApps = true,
+                        enableMagiskSu = false
                     )
                 }
             }
