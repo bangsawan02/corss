@@ -46,11 +46,11 @@ class MainActivity : ComponentActivity() {
                         enableFrida = false,
                         enableTerminal = false,
                         enableXposed = false,
-                        romType = "builtin_rom_embedded",
-                        customRomUrl = "embedded://system.img",
+                        romType = "aosp_11_gapps",
+                        customRomUrl = "https://github.com/phhusson/treble_experimentations/releases/download/v313/system-roar-arm64-ab-gapps.img.xz",
                         systemPartitionSizeMb = 2048,
                         enableGApps = true,
-                        enableMagiskSu = true
+                        enableMagiskSu = false
                     )
                 }
             }
