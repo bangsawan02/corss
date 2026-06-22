@@ -1,0 +1,60 @@
+name: Build Android Virtual Emulator APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Assemble & Sign Android Project
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      # CACHING REQ: "selalu cache yaml github pakai if always()"
+      - name: Cache Build Gradle Dependencies
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Verify Android Tooling Environment
+        run: |
+          echo "Java version info:"
+          java -version
+          echo "Android Home path: $ANDROID_HOME"
+
+      - name: Change Gradle Permission
+        run: chmod +x gradlew || true
+
+      - name: Compile and Build debug APK
+        run: |
+          # Use standard gradle setup if gradlew script was just stubbed
+          if [ -f "gradlew" ]; then
+             echo "Executing project build using Gradle wrapper..."
+             ./gradlew assembleDebug --no-daemon
+          else
+             echo "Using System Gradle build..."
+             gradle assembleDebug --no-daemon
+          fi
+
+      - name: Upload Final APK Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: vphonegaga-root-emulator-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
