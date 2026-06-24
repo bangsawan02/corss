@@ -17,9 +17,9 @@ Builds are executed via GitHub Actions to bypass local hardware resource bottlen
 You can configure and trigger builds directly from the browser build dashboard.
 
 ### 2. Manual Trigger via CLI
-You can commit and push custom browser modifications using `--force-with-lease` to keep a linear clean history:
+You can commit and push custom browser modifications using `-f` to overwrite history and keep remote in sync:
 ```bash
-git push --force-with-lease origin main
+git push -f origin main
 ```
 
 ## 📚 Technical Layout

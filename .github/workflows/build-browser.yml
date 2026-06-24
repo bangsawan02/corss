@@ -37,7 +37,7 @@ jobs:
       - name: Sinkronisasi Gclient & Ekstensi (Shallow)
         run: |
           export PATH=$PATH:$GITHUB_WORKSPACE/depot_tools
-          gclient config --spec 'solutions = [ { "name": "src", "url": "https://github.com/kiwibrowser/src.git", "managed": false, "custom_deps": {}, "safesync_url": "" } ]'
+          gclient config --spec 'solutions = [ { "name": "src", "url": "https://github.com/kiwibrowser/src.git", "managed": False, "custom_deps": {}, "safesync_url": "" } ]'
           gclient sync --no-history --shallow --force
 
       - name: Terapkan Konfigurasi ARM64 Khusus
