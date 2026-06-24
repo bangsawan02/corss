@@ -13,17 +13,3 @@ index 8e45f91..1c94d03 100644
  
  namespace base {
  namespace android {
-
-diff --git a/build/config/compiler/compiler.gni b/build/config/compiler/compiler.gni
-index a83f2e2..b84d101 100644
---- a/build/config/compiler/compiler.gni
-+++ b/build/config/compiler/compiler.gni
-@@ -42,3 +42,9 @@ declare_args() {
-   # Minimize debug symbols inside shared libraries to reduce apk bloat.
-+  is_official_build = true
-+  symbol_level = 0
-+  blink_symbol_level = 0
-+  enable_resource_whitelist_generation = true
-+  exclude_unwind_tables = true
-+  use_thin_lto = true
- }

@@ -1,27 +1,32 @@
 target_os = "android"
 target_cpu = "arm64"
+android_channel = "stable"
+
+# Optimasi Agresif Cloud (Mencegah Kehabisan Storage/RAM)
 is_debug = false
 is_official_build = true
-is_component_build = false
-
-# Footprint and Symbol settings (Reduces APK size from 250MB to ~68MB)
 symbol_level = 0
 blink_symbol_level = 0
 v8_symbol_level = 0
+strip_absolute_paths_from_debug_symbols = true
+
+# Matikan Komponen Berat & Google Bloatware
 enable_nacl = false
-v8_enable_verify_heap = false
-enable_resource_whitelist_generation = true
+enable_remoting = false
+use_official_google_api_keys = false
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+enable_vr = false
+enable_web_speech = false
+
+# Penghematan Ruang Disk Maksimal & Footprint
+optimize_for_size = true
+is_component_build = false
+disable_fieldtrial_testing_config = true
 exclude_unwind_tables = true
 use_thin_lto = true
 
-# Feature strips to limit native bloat on arm64
-enable_vr = false
-enable_remoting = false
-enable_web_speech = false
-proprietary_codecs = true
-ffmpeg_branding = "Chrome"
-
-# Chrome Extension settings
+# Chrome Extension & Desktop Default settings
 enable_extensions = true
 
 # Default desktop viewport scaling & User-Agent

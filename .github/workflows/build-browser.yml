@@ -1,4 +1,4 @@
-name: Build Custom arm64 Kiwi Browser
+name: Build ARM64 Browser Murni GitHub Cloud
 
 on:
   workflow_dispatch:
@@ -6,46 +6,88 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-arm64:
+  build-cloud:
     name: Build arm64-v8a Optimized APK
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Maksimalkan Ruang Penyimpanan GitHub Runner
+        run: |
+          echo "=== CLEANING UP SPACE ==="
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          df -h
+
+      - name: Checkout Kode Kustom Anda
         uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          fetch-depth: 1
 
-      - name: Install Android SDK & Native Compile Tools
+      - name: Install Dependensi Sistem Ubuntu
         run: |
           sudo apt-get update
-          sudo apt-get install -y git python3 python3-pip openjdk-17-jdk ninja-build clang llvm lld ccache
-          echo "INSTALL_SDK_TOOLS=true" >> $GITHUB_ENV
+          sudo apt-get install -y git python3 curl wget openjdk-17-jdk python3-pip ninja-build
 
-      - name: Set up Build Cache (ccache)
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ${{ runner.os }}-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-ccache-
+      - name: Unduh & Konfigurasi Google Depot Tools
+        run: |
+          git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git $GITHUB_WORKSPACE/depot_tools
+          echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
 
-      - name: Run arm64 Specialize & Compile Script
+      - name: Sinkronisasi Gclient & Ekstensi (Shallow)
+        run: |
+          export PATH=$PATH:$GITHUB_WORKSPACE/depot_tools
+          gclient config --spec 'solutions = [ { "name": "src", "url": "https://github.com/kiwibrowser/src.git", "managed": false, "custom_deps": {}, "safesync_url": "" } ]'
+          gclient sync --no-history --shallow --force
+
+      - name: Terapkan Konfigurasi ARM64 Khusus
+        run: |
+          export PATH=$PATH:$GITHUB_WORKSPACE/depot_tools
+          cd src
+          mkdir -p out/Android_Arm64
+          cp ../args.gn out/Android_Arm64/args.gn
+          gn gen out/Android_Arm64
+
+      - name: Jalankan Python Patching (Anti-Corrupt Patch)
         run: |
           chmod +x scripts/build-arm64.sh
           ./scripts/build-arm64.sh
 
-      - name: Optimize APK Size (Strip libchrome & ZipAlign)
+      - name: Kompilasi APK & Modul libchrome.so
         run: |
-          echo "Stripping symbols from compiled libchrome.so inside the APK wrapper..."
-          # Strip debug info to save extra 10-15MB
-          # llvm-strip --strip-debug out/Default/lib.unstripped/libchrome.so
+          export PATH=$PATH:$GITHUB_WORKSPACE/depot_tools
+          cd src
+          # Menggunakan seluruh thread CPU yang tersedia di GitHub Actions
+          ninja -j $(nproc) -C out/Android_Arm64 chrome_public_apk
 
-      - name: Upload Compiled APK
+      - name: Otomatis Tanda Tangan (Sign) APK
+        run: |
+          echo "=== SIGNING APK ==="
+          # Check if Android SDK build-tools is available or use a fallback generator
+          APK_PATH="src/out/Android_Arm64/apks/ChromePublic.apk"
+          SIGNED_APK_PATH="src/out/Android_Arm64/apks/ChromePublic-signed.apk"
+          
+          if [ -f "$APK_PATH" ]; then
+            # Generate keytool keystore on-the-fly for seamless play-protect compatibility
+            keytool -genkey -v -keystore temp.keystore -alias temp_alias -keyalg RSA -keysize 2048 -validity 10000 -storepass temppass -keypass temppass -dname "CN=KiwiCustom, OU=Dev, O=Build, L=Cloud, S=Cloud, C=US"
+            
+            # Find apksigner in android sdk
+            APKSIGNER=$(find $ANDROID_HOME/build-tools/ -name apksigner | sort -r | head -n 1)
+            if [ -n "$APKSIGNER" ]; then
+              $APKSIGNER sign --ks temp.keystore --ks-pass pass:temppass --ks-key-alias temp_alias --out "$SIGNED_APK_PATH" "$APK_PATH"
+              echo "SUCCESS: APK signed successfully!"
+            else
+              echo "WARNING: apksigner not found. Using jarsigner fallback."
+              jarsigner -keystore temp.keystore -storepass temppass -keypass temppass "$APK_PATH" temp_alias
+              cp "$APK_PATH" "$SIGNED_APK_PATH"
+            fi
+          else
+            echo "Error: ChromePublic.apk not found to sign!"
+          fi
+
+      - name: Unggah Hasil APK Release ke Artefak GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: kiwi-arm64-optimized-apk
-          path: src/out/Default/apks/ChromePublic.apk
+          name: Cloud-Browser-ARM64
+          path: src/out/Android_Arm64/apks/ChromePublic-signed.apk
+          retention-days: 7
