@@ -1,0 +1,76 @@
+name: Build ${config.appName} (ARM64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-browser:
+    name: Compile Custom Chromium
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 openjdk-17-jdk ninja-build git curl
+
+      - name: Setup Depot Tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "${GITHUB_WORKSPACE}/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch Browser Engine (Kiwi/Chromium Fork)
+        run: |
+          mkdir -p src && cd src
+          # Menggunakan fork yang mendukung ekstensi & desktop mode
+          git clone --depth 1 https://github.com/kiwibrowser/src.git .
+          
+      - name: Setup GN Configuration
+        working-directory: ./src
+        run: |
+          mkdir -p out/arm64
+          cat <<EOF > out/arm64/args.gn
+          target_os = "android"
+          target_cpu = "arm64"
+          is_debug = false
+          is_official_build = true
+          is_component_build = false
+          symbol_level = 0
+          android_channel = "stable"
+          
+          # Custom Flags
+          enable_extensions = ${config.useExtensions ? 'true' : 'false'}
+          enable_desktop_mode = ${config.useDesktopMode ? 'true' : 'false'}
+          
+          # Optimasi ARM64 (Mencegah bengkak libchrome.so)
+          ${config.optimizeArm64 ? 'arm_use_neon = true\n          arm_optionally_use_hwdiv = true' : ''}
+          
+          # Package Override
+          android_override_package = "${config.packageName}"
+          EOF
+          
+      - name: Run GN Gen
+        working-directory: ./src
+        run: gn gen out/arm64
+
+      - name: Compile Browser (libchrome.so)
+        working-directory: ./src
+        run: autoninja -C out/arm64 chrome_public_apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${config.appName}-ARM64
+          path: src/out/arm64/apks/*.apk
