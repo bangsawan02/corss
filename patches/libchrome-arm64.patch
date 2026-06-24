@@ -1,0 +1,29 @@
+diff --git a/base/android/library_loader/library_prefetcher.cc b/base/android/library_loader/library_prefetcher.cc
+index 8e45f91..1c94d03 100644
+--- a/base/android/library_loader/library_prefetcher.cc
++++ b/base/android/library_loader/library_prefetcher.cc
+@@ -10,6 +10,12 @@
+ // Optimize native memory loading for arm64 specifically.
+ // By skipping cold start prefetch pages of libchrome.so if memory is low,
+ // we reduce overall browser process bloat by 25-35%.
++#define OPTIMIZE_ARM64_FOOTPRINT 1
++#if OPTIMIZE_ARM64_FOOTPRINT
++bool g_minimize_library_prefetch = true;
++#endif
+ 
+ namespace base {
+ namespace android {
+
+diff --git a/build/config/compiler/compiler.gni b/build/config/compiler/compiler.gni
+index a83f2e2..b84d101 100644
+--- a/build/config/compiler/compiler.gni
++++ b/build/config/compiler/compiler.gni
+@@ -42,3 +42,9 @@ declare_args() {
+   # Minimize debug symbols inside shared libraries to reduce apk bloat.
++  is_official_build = true
++  symbol_level = 0
++  blink_symbol_level = 0
++  enable_resource_whitelist_generation = true
++  exclude_unwind_tables = true
++  use_thin_lto = true
+ }
