@@ -1,0 +1,9 @@
+{
+  "browserName": "My Browser",
+  "packageName": "com.myname.browser",
+  "target": "arm64",
+  "features": [
+    "extensions",
+    "desktop_mode_default"
+  ]
+}
