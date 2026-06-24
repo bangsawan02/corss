@@ -1,14 +1,12 @@
-# MyBrowser - Custom Browser Engine
+# My Browser - ARM64 Custom Build
 
-Repositori ini dikonfigurasi untuk mem-build browser Android berbasis Chromium (fork mirip Kiwi Browser) yang dioptimasi khusus untuk arsitektur ARM64.
+This repository is auto-generated to build a custom Chromium-based browser for Android (ARM64) featuring:
+- **Chrome Extension Support** (Similar to Kiwi Browser)
+- **Full Desktop Mode** (Forced Desktop User Agent & Viewport)
 
-## Fitur Utama
-- **Dukungan Ekstensi Chrome (Manifest V2/V3):** Ya
-- **Mode Desktop Penuh:** Ya
-- **Optimasi ARM64:** Ya (Ukuran libchrome.so diperkecil)
-- **Package Name:** `com.mybrowser.arm64`
+## Build Process
+To avoid massive compilation times and out-of-memory errors on GitHub Actions, this project utilizes a pre-compiled, patched fork of `libchrome.so` optimized specifically for ARM64. 
 
-## Cara Build
-Repositori ini menggunakan GitHub Actions. Buka tab **Actions** di repositori GitHub Anda dan jalankan workflow `Build MyBrowser (ARM64)`.
+Any push to `build_config.json` or the `scripts/` directory will automatically trigger a new GitHub Actions build.
 
-APK akan tersedia di bagian artefak setelah build selesai (estimasi waktu build: 4-6 jam pada runner standar).
+Check the **Actions** tab to download your APK!
