@@ -1,4 +1,4 @@
-name: Build ${config.appName} (ARM64)
+name: Build MyBrowser (ARM64)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,15 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 openjdk-17-jdk ninja-build git curl
+          sudo apt-get install -y python3 openjdk-17-jdk ninja-build git curl ccache
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2.14
+        with:
+          max-size: "10G"
+          key: chromium-arm64-${{ github.ref }}
+          restore-keys: |
+            chromium-arm64-
 
       - name: Setup Depot Tools
         run: |
@@ -49,16 +57,18 @@ jobs:
           is_component_build = false
           symbol_level = 0
           android_channel = "stable"
+          cc_wrapper = "ccache"
           
           # Custom Flags
-          enable_extensions = ${config.useExtensions ? 'true' : 'false'}
-          enable_desktop_mode = ${config.useDesktopMode ? 'true' : 'false'}
+          enable_extensions = true
+          enable_desktop_mode = true
           
           # Optimasi ARM64 (Mencegah bengkak libchrome.so)
-          ${config.optimizeArm64 ? 'arm_use_neon = true\n          arm_optionally_use_hwdiv = true' : ''}
+          arm_use_neon = true
+          arm_optionally_use_hwdiv = true
           
           # Package Override
-          android_override_package = "${config.packageName}"
+          android_override_package = "com.mybrowser.arm64"
           EOF
           
       - name: Run GN Gen
@@ -72,5 +82,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${config.appName}-ARM64
+          name: MyBrowser-ARM64
           path: src/out/arm64/apks/*.apk
