@@ -34,11 +34,14 @@ jobs:
           git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git $GITHUB_WORKSPACE/depot_tools
           echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
 
-      - name: Sinkronisasi Gclient & Ekstensi (Shallow)
+      - name: Sinkronisasi Gclient & Ekstensi
         run: |
           export PATH=$PATH:$GITHUB_WORKSPACE/depot_tools
+          # Optimasi konfigurasi Git global untuk Chromium/gclient sync
+          git config --global core.deltaBaseCacheLimit 2G
+          git config --global gc.auto 0
           gclient config --spec 'solutions = [ { "name": "src", "url": "https://github.com/kiwibrowser/src.git", "managed": False, "custom_deps": {}, "safesync_url": "" } ]'
-          gclient sync --no-history --shallow --force
+          gclient sync --no-history --force --reset
 
       - name: Terapkan Konfigurasi ARM64 Khusus
         run: |
