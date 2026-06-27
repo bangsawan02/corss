@@ -1,111 +1,109 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 import shutil
 import zipfile
-from kivy.utils import platform
+import subprocess
+import flet as ft
 
-# Configure Kivy window size for testing if on desktop
-if platform not in ['android', 'ios']:
-    from kivy.config import Config
-    Config.set('graphics', 'width', '360')
-    Config.set('graphics', 'height', '640')
-
-from kivy.app import App
-from kivy.uix.screenmanager import ScreenManager, Screen
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.boxlayout import BoxLayout
-from kivy.properties import StringProperty, ListProperty, ObjectProperty, BooleanProperty
-from kivy.metrics import dp
-
-# KivyMD Imports
-from kivymd.app import MDApp
-from kivymd.uix.button import MDIconButton, MDRaisedButton, MDFillRoundFlatButton, MDFlatButton
-from kivymd.uix.toolbar import MDTopAppBar
-from kivymd.uix.list import MDList, OneLineIconListItem, TwoLineIconListItem, IconLeftWidget, IconRightWidget
-from kivymd.uix.dialog import MDDialog
-from kivymd.uix.textfield import MDTextField
-from kivymd.uix.boxlayout import MDBoxLayout
-from kivymd.uix.label import MDLabel
-from kivymd.uix.card import MDCard
-
-# Request storage permissions for Android
-if platform == 'android':
-    from android.permissions import request_permissions, Permission
-    request_permissions([
-        Permission.READ_EXTERNAL_STORAGE,
-        Permission.WRITE_EXTERNAL_STORAGE,
-        Permission.MANAGE_EXTERNAL_STORAGE
-    ])
-
-
-class FileManagerScreen(Screen):
-    current_path = StringProperty("")
-    clipboard_path = StringProperty("")
-    clipboard_action = StringProperty("")  # "copy" or "move"
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.current_path = os.path.expanduser("~")
-        if platform == 'android':
-            # Default to SD Card on Android
-            self.current_path = "/sdcard" if os.path.exists("/sdcard") else "/storage/emulated/0"
-        
-    def on_enter(self):
-        self.update_toolbar_icons()
-        self.refresh_list()
-
-    def update_toolbar_icons(self):
-        app = MDApp.get_running_app()
-        shield_icon = "shield-lock" if app.root_mode else "shield-lock-outline"
-        self.ids.top_bar.right_action_items = [
-            [shield_icon, lambda x: self.toggle_root_mode()],
-            ["folder-plus", lambda x: self.show_create_dialog(is_dir=True)],
-            ["file-plus", lambda x: self.show_create_dialog(is_dir=False)],
-            ["refresh", lambda x: self.refresh_list()]
-        ]
-
-    def toggle_root_mode(self):
-        app = MDApp.get_running_app()
-        if not app.root_mode:
-            if app.check_root_available():
-                app.root_mode = True
-                self.show_message("Root Mode Active", "Superuser privileges granted and root mode enabled.")
-            else:
-                self.show_message("Root Mode", "Could not acquire root permissions. Please make sure your device is rooted and superuser access is allowed.")
+# Shell Command Execution Helper
+def exec_cmd(cmd, as_root=False):
+    try:
+        if as_root:
+            p = subprocess.Popen(['su'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = p.communicate(input=cmd, timeout=5)
+            return p.returncode, stdout, stderr
         else:
-            app.root_mode = False
-            self.show_message("Root Mode Disabled", "Switched back to standard user permissions.")
-        
-        self.update_toolbar_icons()
-        self.refresh_list()
+            p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = p.communicate(timeout=5)
+            return p.returncode, stdout, stderr
+    except Exception as e:
+        return -1, "", str(e)
 
-    def go_back(self):
-        parent = os.path.dirname(self.current_path)
-        if parent and parent != self.current_path:
-            self.current_path = parent
-            self.refresh_list()
+def check_root_available():
+    if sys.platform not in ['android', 'linux']:
+        return True
+    try:
+        p = subprocess.Popen(['su', '-c', 'id'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, _ = p.communicate(timeout=2)
+        return "uid=0" in stdout or p.returncode == 0
+    except:
+        return False
 
-    def go_to_dir(self, path):
-        app = MDApp.get_running_app()
-        is_directory = False
-        if os.path.isdir(path):
-            is_directory = True
-        elif app.root_mode:
-            # Check if it's a directory using su
-            code, stdout, _ = app.exec_cmd(f"[ -d '{path}' ] && echo 'yes'", as_root=True)
-            if "yes" in stdout:
-                is_directory = True
+def format_size(size):
+    try:
+        size = float(size)
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} TB"
+    except:
+        return "Unknown"
 
-        if is_directory:
-            self.current_path = path
-            self.refresh_list()
-        else:
-            self.show_message("Error", "Not a directory or permission denied.")
+def main(page: ft.Page):
+    page.title = "MT Manager Flet"
+    page.theme_mode = ft.ThemeMode.DARK
+    page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_GREY)
+    page.padding = 0
 
-    def listdir_root(self, path):
-        app = MDApp.get_running_app()
-        code, stdout, stderr = app.exec_cmd(f"ls -ap '{path}'", as_root=True)
+    # App States
+    root_mode = False
+    current_path = "/sdcard" if os.path.exists("/sdcard") else "/storage/emulated/0"
+    if not os.path.exists(current_path):
+        current_path = "/"
+
+    clipboard_path = ""
+    clipboard_action = ""  # "copy" or "move"
+    
+    # State stacks for sub-pages
+    # We will use simple view control swaps to render different views.
+    active_view = "explorer"  # "explorer", "editor", "zip_viewer"
+    editing_file_path = ""
+    viewing_zip_path = ""
+    zip_contents = []
+
+    # UI Components
+    list_container = ft.ListView(expand=1, spacing=2, padding=10)
+    path_label = ft.Text(value=current_path, style=ft.TextThemeStyle.BODY_MEDIUM, color=ft.Colors.BLUE_GREY_200)
+    root_badge = ft.Container(
+        content=ft.Text("ROOT", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+        bgcolor=ft.Colors.RED_ACCENT_700,
+        padding=ft.padding.symmetric(horizontal=6, vertical=2),
+        border_radius=3,
+        visible=False
+    )
+    
+    paste_bar = ft.Container(
+        content=ft.Row([
+            ft.Icon(name=ft.Icons.CONTENT_PASTE, color=ft.Colors.AMBER_400),
+            ft.Text("Clipboard ready", size=12, expand=True),
+            ft.TextButton("PASTE", on_click=lambda e: paste_clipboard()),
+            ft.IconButton(icon=ft.Icons.CLOSE, icon_size=16, on_click=lambda e: clear_clipboard())
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        bgcolor=ft.Colors.BLUE_GREY_900,
+        padding=10,
+        visible=False
+    )
+
+    def show_toast(title, text, is_error=False):
+        color = ft.Colors.RED_900 if is_error else ft.Colors.GREEN_900
+        snack = ft.SnackBar(
+            content=ft.Row([
+                ft.Icon(ft.Icons.ERROR_OUTLINE if is_error else ft.Icons.CHECK, color=ft.Colors.WHITE),
+                ft.Column([
+                    ft.Text(title, weight=ft.FontWeight.BOLD, size=14),
+                    ft.Text(text, size=12)
+                ], spacing=1, expand=True)
+            ]),
+            bgcolor=color,
+            duration=3000
+        )
+        page.overlay.append(snack)
+        snack.open = True
+        page.update()
+
+    def listdir_root(path):
+        code, stdout, stderr = exec_cmd(f"ls -ap '{path}'", as_root=True)
         if code != 0:
             raise Exception(stderr or f"ls failed with code {code}")
         
@@ -120,440 +118,455 @@ class FileManagerScreen(Screen):
                 folders.append(line[:-1])
             else:
                 files.append(line)
-        return folders, files
+        return sorted(folders), sorted(files)
 
-    def refresh_list(self):
-        self.ids.file_list.clear_widgets()
-        app = MDApp.get_running_app()
+    def get_file_size_root(path):
+        code, stdout, _ = exec_cmd(f"wc -c '{path}'", as_root=True)
+        if code == 0:
+            try:
+                return int(stdout.strip().split()[0])
+            except:
+                pass
+        return 0
+
+    def refresh_list():
+        nonlocal current_path
+        list_container.controls.clear()
+        path_label.value = current_path
         
-        # Add a list item to go up a directory
-        if self.current_path != "/":
-            up_item = OneLineIconListItem(text=".. (Go Up)")
-            up_icon = IconLeftWidget(icon="folder-upload")
-            up_item.add_widget(up_icon)
-            up_item.bind(on_release=lambda x: self.go_back())
-            self.ids.file_list.add_widget(up_item)
+        # Upper directory navigatibility
+        if current_path != "/":
+            up_dir = os.path.dirname(current_path)
+            list_container.controls.append(
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.ARROW_UPWARD, color=ft.Colors.AMBER_500),
+                    title=ft.Text(".. (Go up parent directory)", size=14, weight=ft.FontWeight.W_500),
+                    on_click=lambda e, p=up_dir: navigate_to(p)
+                )
+            )
 
         try:
-            if app.root_mode:
-                folders, files = self.listdir_root(self.current_path)
+            if root_mode:
+                folders, files = listdir_root(current_path)
             else:
                 try:
-                    items = os.listdir(self.current_path)
-                    folders = sorted([i for i in items if os.path.isdir(os.path.join(self.current_path, i))])
-                    files = sorted([i for i in items if os.path.isfile(os.path.join(self.current_path, i))])
+                    items = os.listdir(current_path)
+                    folders = sorted([i for i in items if os.path.isdir(os.path.join(current_path, i))])
+                    files = sorted([i for i in items if os.path.isfile(os.path.join(current_path, i))])
                 except Exception as e:
-                    if app.check_root_available():
-                        # Auto fallback to root listdir if su is available
-                        folders, files = self.listdir_root(self.current_path)
+                    if check_root_available():
+                        folders, files = listdir_root(current_path)
                     else:
                         raise e
             
-            for folder in folders:
-                full_path = os.path.join(self.current_path, folder)
-                item = TwoLineIconListItem(
-                    text=folder,
-                    secondary_text="Directory",
+            # Populate Folders
+            for f in folders:
+                f_path = os.path.join(current_path, f)
+                list_container.controls.append(
+                    ft.ListTile(
+                        leading=ft.Icon(ft.Icons.FOLDER, color=ft.Colors.AMBER_400),
+                        title=ft.Text(f, size=14, weight=ft.FontWeight.W_500),
+                        subtitle=ft.Text("Directory", size=11, color=ft.Colors.BLUE_GREY_300),
+                        trailing=ft.IconButton(
+                            icon=ft.Icons.MORE_VERT,
+                            on_click=lambda e, p=f_path, n=f: show_options_dialog(p, n, is_dir=True)
+                        ),
+                        on_click=lambda e, p=f_path: navigate_to(p)
+                    )
                 )
-                icon = IconLeftWidget(icon="folder")
-                item.add_widget(icon)
-                
-                # Action button on the right
-                opt_btn = IconRightWidget(icon="dots-vertical")
-                opt_btn.bind(on_release=lambda x, p=full_path: self.show_options(p, is_dir=True))
-                item.add_widget(opt_btn)
-                
-                item.bind(on_release=lambda x, p=full_path: self.go_to_dir(p))
-                self.ids.file_list.add_widget(item)
 
-            for file in files:
-                full_path = os.path.join(self.current_path, file)
-                ext = os.path.splitext(file)[1].lower()
+            # Populate Files
+            for f in files:
+                f_path = os.path.join(current_path, f)
                 
-                icon_name = "file"
-                if ext in [".txt", ".py", ".json", ".xml", ".html", ".css", ".ini"]:
-                    icon_name = "file-document"
-                elif ext in [".zip", ".rar", ".tar", ".gz"]:
-                    icon_name = "zip-box"
-                elif ext == ".apk":
-                    icon_name = "android"
-                elif ext in [".png", ".jpg", ".jpeg", ".webp"]:
-                    icon_name = "file-image"
-
-                item = TwoLineIconListItem(
-                    text=file,
-                    secondary_text=f"File | {self.get_file_size(full_path)}",
-                )
-                icon = IconLeftWidget(icon=icon_name)
-                item.add_widget(icon)
-                
-                opt_btn = IconRightWidget(icon="dots-vertical")
-                opt_btn.bind(on_release=lambda x, p=full_path: self.show_options(p, is_dir=False))
-                item.add_widget(opt_btn)
-                
-                item.bind(on_release=lambda x, p=full_path, e=ext: self.handle_file_click(p, e))
-                self.ids.file_list.add_widget(item)
-                
-        except Exception as e:
-            err_item = OneLineIconListItem(text=f"Error reading path: {str(e)}")
-            self.ids.file_list.add_widget(err_item)
-
-    def get_file_size(self, path):
-        app = MDApp.get_running_app()
-        try:
-            if app.root_mode:
-                code, stdout, _ = app.exec_cmd(f"wc -c '{path}'", as_root=True)
-                if code == 0:
-                    size = int(stdout.strip().split()[0])
+                # Get file size
+                if root_mode:
+                    size_bytes = get_file_size_root(f_path)
                 else:
-                    size = os.path.getsize(path)
-            else:
-                size = os.path.getsize(path)
+                    try:
+                        size_bytes = os.path.getsize(f_path)
+                    except:
+                        size_bytes = 0
+                        
+                size_str = format_size(size_bytes)
                 
-            for unit in ['B', 'KB', 'MB', 'GB']:
-                if size < 1024:
-                    return f"{size:.1f} {unit}"
-                size /= 1024
-            return f"{size:.1f} TB"
-        except:
-            return "Unknown size"
+                is_apk = f.lower().endswith(".apk")
+                is_zip = f.lower().endswith(".zip")
+                icon = ft.Icons.ANDROID if is_apk else (ft.Icons.FOLDER_ZIP if is_zip else ft.Icons.INSERT_DRIVE_FILE)
+                icon_color = ft.Colors.GREEN_400 if is_apk else (ft.Colors.ORANGE_400 if is_zip else ft.Colors.BLUE_GREY_400)
 
-    def handle_file_click(self, path, ext):
-        if ext in [".txt", ".py", ".json", ".xml", ".html", ".css", ".ini", ".cfg", ".spec"]:
-            # Open Text Editor
-            editor_screen = self.manager.get_screen('editor')
-            editor_screen.open_file(path)
-            self.manager.current = 'editor'
-        elif ext in [".zip", ".apk"]:
-            # Show ZIP/APK content viewer
-            zip_screen = self.manager.get_screen('zip_viewer')
-            zip_screen.open_archive(path)
-            self.manager.current = 'zip_viewer'
+                list_container.controls.append(
+                    ft.ListTile(
+                        leading=ft.Icon(icon, color=icon_color),
+                        title=ft.Text(f, size=14, weight=ft.FontWeight.W_500),
+                        subtitle=ft.Text(f"File • {size_str}", size=11, color=ft.Colors.BLUE_GREY_300),
+                        trailing=ft.IconButton(
+                            icon=ft.Icons.MORE_VERT,
+                            on_click=lambda e, p=f_path, n=f, apk=is_apk, zp=is_zip: show_options_dialog(p, n, is_dir=False, is_apk=apk, is_zip=zp)
+                        ),
+                        on_click=lambda e, p=f_path, apk=is_apk, zp=is_zip: handle_file_click(p, apk, zp)
+                    )
+                )
 
-    def show_options(self, path, is_dir=False):
-        name = os.path.basename(path)
-        
-        buttons = [
-            MDFlatButton(text="Rename", on_release=lambda x: self.dialog_rename(path)),
-            MDFlatButton(text="Delete", on_release=lambda x: self.dialog_delete(path)),
-            MDFlatButton(text="Copy", on_release=lambda x: self.set_clipboard(path, "copy")),
-            MDFlatButton(text="Move", on_release=lambda x: self.set_clipboard(path, "move")),
-        ]
-        
-        if not is_dir and os.path.splitext(name)[1].lower() == ".apk":
-            buttons.append(MDFlatButton(text="Sign APK", on_release=lambda x: self.sign_apk_tool(path)))
+        except Exception as e:
+            list_container.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.ERROR_OUTLINE, color=ft.Colors.RED_400, size=40),
+                        ft.Text(f"Error accessing path:\n{str(e)}", color=ft.Colors.RED_400, text_align=ft.TextAlign.CENTER, size=12)
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    alignment=ft.alignment.center,
+                    padding=20
+                )
+            )
+        page.update()
 
-        buttons.append(MDFlatButton(text="Cancel", on_release=lambda x: self.dialog.dismiss()))
+    def navigate_to(path):
+        nonlocal current_path
+        current_path = path
+        refresh_list()
 
-        self.dialog = MDDialog(
-            title=f"Options for {name}",
-            type="simple",
-            buttons=buttons
+    def toggle_root_mode(e):
+        nonlocal root_mode
+        if not root_mode:
+            if check_root_available():
+                root_mode = True
+                root_badge.visible = True
+                shield_btn.icon = ft.Icons.SHIELD
+                shield_btn.icon_color = ft.Colors.RED_ACCENT_400
+                show_toast("Root Mode Active", "Superuser privileges successfully enabled!")
+            else:
+                show_toast("Permission Denied", "No superuser binary detected or root privilege was rejected.", is_error=True)
+        else:
+            root_mode = False
+            root_badge.visible = False
+            shield_btn.icon = ft.Icons.SHIELD_OUTLINED
+            shield_btn.icon_color = ft.Colors.WHITE
+            show_toast("Root Mode Disabled", "Standard user restrictions are back in place.")
+        refresh_list()
+
+    # Create dialog launcher
+    def show_create_dialog(is_dir=True):
+        name_input = ft.TextField(
+            label="Name", 
+            placeholder="enter folder name" if is_dir else "enter file name", 
+            autofocus=True,
+            text_size=13
         )
-        self.dialog.open()
-
-    def set_clipboard(self, path, action):
-        self.clipboard_path = path
-        self.clipboard_action = action
-        self.dialog.dismiss()
-        self.ids.paste_btn.opacity = 1
-        self.ids.paste_btn.disabled = False
-
-    def paste_clipboard(self):
-        app = MDApp.get_running_app()
-        if not self.clipboard_path or not os.path.exists(self.clipboard_path):
-            if not app.root_mode:
-                return
-            # Check if exists using root
-            code, stdout, _ = app.exec_cmd(f"[ -e '{self.clipboard_path}' ] && echo 'yes'", as_root=True)
-            if "yes" not in stdout:
-                return
         
-        dest_name = os.path.basename(self.clipboard_path)
-        dest_path = os.path.join(self.current_path, dest_name)
-        
-        try:
-            if app.root_mode:
-                if self.clipboard_action == "copy":
-                    flag = "-r" if os.path.isdir(self.clipboard_path) else ""
-                    if not flag:
-                        code, stdout, _ = app.exec_cmd(f"[ -d '{self.clipboard_path}' ] && echo 'yes'", as_root=True)
-                        if "yes" in stdout:
-                            flag = "-r"
-                    code, stdout, stderr = app.exec_cmd(f"cp {flag} '{self.clipboard_path}' '{dest_path}'", as_root=True)
-                elif self.clipboard_action == "move":
-                    code, stdout, stderr = app.exec_cmd(f"mv '{self.clipboard_path}' '{dest_path}'", as_root=True)
-                    self.clipboard_path = ""
-                    self.ids.paste_btn.opacity = 0
-                    self.ids.paste_btn.disabled = True
-                
-                if code != 0:
-                    raise Exception(stderr or f"Root operation failed with code {code}")
-            else:
-                if self.clipboard_action == "copy":
-                    if os.path.isdir(self.clipboard_path):
-                        shutil.copytree(self.clipboard_path, dest_path)
+        def save_creation(e):
+            if not name_input.value.strip():
+                return
+            target = os.path.join(current_path, name_input.value.strip())
+            try:
+                if root_mode:
+                    if is_dir:
+                        code, _, stderr = exec_cmd(f"mkdir -p '{target}'", as_root=True)
                     else:
-                        shutil.copy2(self.clipboard_path, dest_path)
-                elif self.clipboard_action == "move":
-                    shutil.move(self.clipboard_path, dest_path)
-                    self.clipboard_path = ""
-                    self.ids.paste_btn.opacity = 0
-                    self.ids.paste_btn.disabled = True
+                        code, _, stderr = exec_cmd(f"touch '{target}'", as_root=True)
+                    if code != 0:
+                        raise Exception(stderr)
+                else:
+                    if is_dir:
+                        os.makedirs(target, exist_ok=True)
+                    else:
+                        with open(target, 'w') as f:
+                            f.write("")
+                show_toast("Success", f"{'Directory' if is_dir else 'File'} successfully created.")
+                dialog.open = False
+                refresh_list()
+            except Exception as ex:
+                show_toast("Failed", str(ex), is_error=True)
 
-            self.refresh_list()
-        except Exception as e:
-            self.show_message("Error", f"Failed to paste: {str(e)}")
+        dialog = ft.AlertDialog(
+            title=ft.Text("Create Folder" if is_dir else "Create File", size=16, weight=ft.FontWeight.BOLD),
+            content=name_input,
+            actions=[
+                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
+                ft.TextButton("CREATE", on_click=save_creation)
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
 
-    def dialog_rename(self, path):
-        self.dialog.dismiss()
-        name = os.path.basename(path)
-        
-        content = MDBoxLayout(orientation="vertical", spacing="12dp", size_hint_y=None, height="80dp")
-        self.rename_field = MDTextField(text=name, hint_text="New name")
-        content.add_widget(self.rename_field)
+    # Context menu option dialog
+    def show_options_dialog(path, name, is_dir, is_apk=False, is_zip=False):
+        dialog_options = []
 
-        self.dialog = MDDialog(
-            title="Rename Item",
-            type="custom",
-            content_cls=content,
-            buttons=[
-                MDFlatButton(text="Cancel", on_release=lambda x: self.dialog.dismiss()),
-                MDRaisedButton(text="Save", on_release=lambda x, p=path: self.do_rename(p))
+        # 1. Rename Option
+        def handle_rename_click(e):
+            page.close(options_dialog)
+            show_rename_dialog(path, name)
+            
+        dialog_options.append(
+            ft.ListTile(
+                leading=ft.Icon(ft.Icons.DRIVE_FILE_RENAME_OUTLINE, size=18),
+                title=ft.Text("Rename", size=13),
+                on_click=handle_rename_click
+            )
+        )
+
+        # 2. Copy & Move Options
+        def prepare_clipboard(action):
+            nonlocal clipboard_path, clipboard_action
+            clipboard_path = path
+            clipboard_action = action
+            paste_bar.content.controls[1].value = f"Selected: {os.path.basename(path)} ({action.upper()})"
+            paste_bar.visible = True
+            page.close(options_dialog)
+            page.update()
+
+        dialog_options.append(
+            ft.ListTile(
+                leading=ft.Icon(ft.Icons.COPY_ALL, size=18),
+                title=ft.Text("Copy", size=13),
+                on_click=lambda e: prepare_clipboard("copy")
+            )
+        )
+        dialog_options.append(
+            ft.ListTile(
+                leading=ft.Icon(ft.Icons.MOVE_UP, size=18),
+                title=ft.Text("Move", size=13),
+                on_click=lambda e: prepare_clipboard("move")
+            )
+        )
+
+        # 3. Zip Extraction options
+        if is_zip:
+            def handle_unzip(e):
+                page.close(options_dialog)
+                unzip_archive(path)
+            dialog_options.append(
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.UNARCHIVE, color=ft.Colors.ORANGE_300, size=18),
+                    title=ft.Text("Extract All", size=13),
+                    on_click=handle_unzip
+                )
+            )
+
+        # 4. APK Signing option
+        if is_apk:
+            def handle_apk_sign(e):
+                page.close(options_dialog)
+                sign_apk(path)
+            dialog_options.append(
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.KEYBOARD_COMMAND_KEY, color=ft.Colors.GREEN_300, size=18),
+                    title=ft.Text("Sign APK with Custom Cert", size=13),
+                    on_click=handle_apk_sign
+                )
+            )
+
+        # 5. Delete option
+        def handle_delete_click(e):
+            page.close(options_dialog)
+            show_delete_confirm(path, name, is_dir)
+
+        dialog_options.append(
+            ft.ListTile(
+                leading=ft.Icon(ft.Icons.DELETE_FOREVER, color=ft.Colors.RED_300, size=18),
+                title=ft.Text("Delete", size=13, color=ft.Colors.RED_300),
+                on_click=handle_delete_click
+            )
+        )
+
+        options_dialog = ft.AlertDialog(
+            title=ft.Text(name, size=15, weight=ft.FontWeight.BOLD, no_wrap=True),
+            content=ft.Column(dialog_options, tight=True, spacing=1),
+            actions=[
+                ft.TextButton("CLOSE", on_click=lambda x: page.close(options_dialog))
             ]
         )
-        self.dialog.open()
+        page.overlay.append(options_dialog)
+        options_dialog.open = True
+        page.update()
 
-    def do_rename(self, path):
-        new_name = self.rename_field.text.strip()
-        if not new_name:
+    def show_rename_dialog(path, name):
+        rename_input = ft.TextField(label="New Name", value=name, autofocus=True, text_size=13)
+        
+        def save_rename(e):
+            if not rename_input.value.strip():
+                return
+            new_path = os.path.join(os.path.dirname(path), rename_input.value.strip())
+            try:
+                if root_mode:
+                    code, _, stderr = exec_cmd(f"mv '{path}' '{new_path}'", as_root=True)
+                    if code != 0:
+                        raise Exception(stderr)
+                else:
+                    os.rename(path, new_path)
+                show_toast("Success", "Successfully renamed.")
+                page.close(dialog)
+                refresh_list()
+            except Exception as ex:
+                show_toast("Rename Failed", str(ex), is_error=True)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Rename File/Folder", size=15, weight=ft.FontWeight.BOLD),
+            content=rename_input,
+            actions=[
+                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
+                ft.TextButton("RENAME", on_click=save_rename)
+            ]
+        )
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def show_delete_confirm(path, name, is_dir):
+        def save_delete(e):
+            try:
+                if root_mode:
+                    code, _, stderr = exec_cmd(f"rm -rf '{path}'", as_root=True)
+                    if code != 0:
+                        raise Exception(stderr)
+                else:
+                    if is_dir:
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                show_toast("Success", "Deleted successfully.")
+                page.close(dialog)
+                refresh_list()
+            except Exception as ex:
+                show_toast("Deletion Failed", str(ex), is_error=True)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Confirm Deletion", size=15, weight=ft.FontWeight.BOLD),
+            content=ft.Text(f"Are you sure you want to delete {name}?\nThis is irreversible.", size=12),
+            actions=[
+                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
+                ft.TextButton("DELETE", on_click=save_delete, style=ft.ButtonStyle(color=ft.Colors.RED_400))
+            ]
+        )
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    def clear_clipboard():
+        nonlocal clipboard_path, clipboard_action
+        clipboard_path = ""
+        clipboard_action = ""
+        paste_bar.visible = False
+        page.update()
+
+    def paste_clipboard():
+        nonlocal clipboard_path, clipboard_action
+        if not clipboard_path:
             return
         
-        parent = os.path.dirname(path)
-        new_path = os.path.join(parent, new_name)
-        app = MDApp.get_running_app()
+        dest_name = os.path.basename(clipboard_path)
+        dest_path = os.path.join(current_path, dest_name)
         
         try:
-            if app.root_mode:
-                code, stdout, stderr = app.exec_cmd(f"mv '{path}' '{new_path}'", as_root=True)
+            if root_mode:
+                # Root Mode Clipboard Action
+                if clipboard_action == "copy":
+                    flag = "-r"
+                    code, _, stderr = exec_cmd(f"cp {flag} '{clipboard_path}' '{dest_path}'", as_root=True)
+                elif clipboard_action == "move":
+                    code, _, stderr = exec_cmd(f"mv '{clipboard_path}' '{dest_path}'", as_root=True)
+                
                 if code != 0:
-                    raise Exception(stderr or f"Root rename failed with code {code}")
+                    raise Exception(stderr or "Root command paste failure.")
             else:
-                os.rename(path, new_path)
-            self.dialog.dismiss()
-            self.refresh_list()
-        except Exception as e:
-            self.show_message("Error", f"Rename failed: {str(e)}")
+                # Standard Mode Clipboard Action
+                if clipboard_action == "copy":
+                    if os.path.isdir(clipboard_path):
+                        shutil.copytree(clipboard_path, dest_path)
+                    else:
+                        shutil.copy2(clipboard_path, dest_path)
+                elif clipboard_action == "move":
+                    shutil.move(clipboard_path, dest_path)
 
-    def dialog_delete(self, path):
-        self.dialog.dismiss()
-        name = os.path.basename(path)
-        self.dialog = MDDialog(
-            title="Confirm Delete",
-            text=f"Are you sure you want to permanently delete {name}?",
-            buttons=[
-                MDFlatButton(text="Cancel", on_release=lambda x: self.dialog.dismiss()),
-                MDRaisedButton(text="Delete", md_bg_color=(1, 0.2, 0.2, 1), on_release=lambda x, p=path: self.do_delete(p))
-            ]
-        )
-        self.dialog.open()
+            show_toast("Success", f"Paste operation completed ({clipboard_action}).")
+            if clipboard_action == "move":
+                clear_clipboard()
+            refresh_list()
+        except Exception as ex:
+            show_toast("Paste Operation Failed", str(ex), is_error=True)
 
-    def do_delete(self, path):
-        app = MDApp.get_running_app()
-        try:
-            if app.root_mode:
-                code, stdout, stderr = app.exec_cmd(f"rm -rf '{path}'", as_root=True)
-                if code != 0:
-                    raise Exception(stderr or f"Root delete failed with code {code}")
-            else:
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                else:
-                    os.remove(path)
-            self.dialog.dismiss()
-            self.refresh_list()
-        except Exception as e:
-            self.show_message("Error", f"Delete failed: {str(e)}")
+    # Click actions
+    def handle_file_click(path, is_apk, is_zip):
+        if is_zip:
+            open_zip_viewer(path)
+        else:
+            open_file_editor(path)
 
-    def show_create_dialog(self, is_dir=False):
-        title = "Create New Folder" if is_dir else "Create New File"
-        hint = "Folder Name" if is_dir else "File Name"
+    # 1. Text File Editor Component & View
+    editor_title = ft.Text("Text Editor", size=16, weight=ft.FontWeight.BOLD)
+    editor_text_field = ft.TextField(
+        multiline=True,
+        expand=True,
+        text_size=12,
+        font_family="monospace",
+        keyboard_type=ft.KeyboardType.TEXT,
+        border_width=0,
+        content_padding=15
+    )
+
+    def open_file_editor(path):
+        nonlocal active_view, editing_file_path
+        editing_file_path = path
+        editor_title.value = os.path.basename(path)
         
-        content = MDBoxLayout(orientation="vertical", spacing="12dp", size_hint_y=None, height="80dp")
-        self.create_field = MDTextField(hint_text=hint)
-        content.add_widget(self.create_field)
-
-        self.dialog = MDDialog(
-            title=title,
-            type="custom",
-            content_cls=content,
-            buttons=[
-                MDFlatButton(text="Cancel", on_release=lambda x: self.dialog.dismiss()),
-                MDRaisedButton(text="Create", on_release=lambda x, d=is_dir: self.do_create(d))
-            ]
-        )
-        self.dialog.open()
-
-    def do_create(self, is_dir):
-        name = self.create_field.text.strip()
-        if not name:
-            return
-        
-        target_path = os.path.join(self.current_path, name)
-        app = MDApp.get_running_app()
         try:
-            if app.root_mode:
-                if is_dir:
-                    code, stdout, stderr = app.exec_cmd(f"mkdir -p '{target_path}'", as_root=True)
-                else:
-                    code, stdout, stderr = app.exec_cmd(f"touch '{target_path}'", as_root=True)
+            if root_mode:
+                code, stdout, stderr = exec_cmd(f"cat '{path}'", as_root=True)
                 if code != 0:
-                    raise Exception(stderr or f"Root creation failed with code {code}")
-            else:
-                if is_dir:
-                    os.makedirs(target_path, exist_ok=True)
-                else:
-                    with open(target_path, 'w') as f:
-                        f.write("")
-            self.dialog.dismiss()
-            self.refresh_list()
-        except Exception as e:
-            self.show_message("Error", f"Creation failed: {str(e)}")
-
-    def sign_apk_tool(self, path):
-        self.dialog.dismiss()
-        app = MDApp.get_running_app()
-        try:
-            unsigned_path = path
-            signed_path = os.path.splitext(path)[0] + "_signed.apk"
-            
-            if app.root_mode:
-                temp_unsigned = os.path.join(os.path.expanduser("~"), "temp_unsigned.apk")
-                temp_signed = os.path.join(os.path.expanduser("~"), "temp_signed.apk")
-                
-                app.exec_cmd(f"cp '{unsigned_path}' '{temp_unsigned}'", as_root=True)
-                app.exec_cmd(f"chmod 666 '{temp_unsigned}'", as_root=True)
-                
-                with zipfile.ZipFile(temp_unsigned, 'r') as yin:
-                    with zipfile.ZipFile(temp_signed, 'w') as yout:
-                        for item in yin.infolist():
-                            if not item.filename.startswith("META-INF/"):
-                                data = yin.read(item.filename)
-                                yout.writestr(item, data)
-                        
-                        yout.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: MT-Manager-KivyMD\n\n")
-                        yout.writestr("META-INF/CERT.SF", "Signature-Version: 1.0\nCreated-By: MT-Manager-KivyMD\n\n")
-                        yout.writestr("META-INF/CERT.RSA", "MT_MANAGER_SIGNATURE_KEY_REPLACED_SUCCESSFULLY")
-                
-                code, stdout, stderr = app.exec_cmd(f"cp '{temp_signed}' '{signed_path}'", as_root=True)
-                try:
-                    os.remove(temp_unsigned)
-                    os.remove(temp_signed)
-                except:
-                    pass
-                    
-                if code != 0:
-                    raise Exception(stderr or f"Root copy of signed APK failed: {code}")
-            else:
-                with zipfile.ZipFile(unsigned_path, 'r') as yin:
-                    with zipfile.ZipFile(signed_path, 'w') as yout:
-                        for item in yin.infolist():
-                            if not item.filename.startswith("META-INF/"):
-                                data = yin.read(item.filename)
-                                yout.writestr(item, data)
-                        
-                        yout.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: MT-Manager-KivyMD\n\n")
-                        yout.writestr("META-INF/CERT.SF", "Signature-Version: 1.0\nCreated-By: MT-Manager-KivyMD\n\n")
-                        yout.writestr("META-INF/CERT.RSA", "MT_MANAGER_SIGNATURE_KEY_REPLACED_SUCCESSFULLY")
-            
-            self.show_message("Success", f"APK Signed Successfully!\nSaved as: {os.path.basename(signed_path)}")
-            self.refresh_list()
-        except Exception as e:
-            self.show_message("Error", f"Failed to sign APK: {str(e)}")
-
-    def show_message(self, title, text):
-        self.dialog = MDDialog(
-            title=title,
-            text=text,
-            buttons=[MDFlatButton(text="OK", on_release=lambda x: self.dialog.dismiss())]
-        )
-        self.dialog.open()
-
-
-class TextEditorScreen(Screen):
-    file_path = StringProperty("")
-
-    def open_file(self, path):
-        self.file_path = path
-        self.ids.editor_title.title = os.path.basename(path)
-        app = MDApp.get_running_app()
-        try:
-            if app.root_mode:
-                code, stdout, stderr = app.exec_cmd(f"cat '{path}'", as_root=True)
-                if code != 0:
-                    raise Exception(stderr or f"Root cat failed with code {code}")
-                self.ids.text_content.text = stdout
+                    raise Exception(stderr or "Empty or inaccessible file.")
+                editor_text_field.value = stdout
             else:
                 with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    self.ids.text_content.text = f.read()
-        except Exception as e:
-            self.ids.text_content.text = f"Failed to read file: {str(e)}"
+                    editor_text_field.value = f.read()
+        except Exception as ex:
+            editor_text_field.value = f"Failed to read file: {str(ex)}"
+        
+        active_view = "editor"
+        update_view_hierarchy()
 
-    def save_file(self):
-        if not self.file_path:
-            return
-        app = MDApp.get_running_app()
+    def save_editor_content():
         try:
-            if app.root_mode:
-                temp_path = os.path.join(os.path.expanduser("~"), ".mt_temp_write")
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    f.write(self.ids.text_content.text)
+            if root_mode:
+                # Temp file to write to standard user storage first
+                temp_p = os.path.join(os.path.expanduser("~"), ".flet_write_temp")
+                with open(temp_p, 'w', encoding='utf-8') as f:
+                    f.write(editor_text_field.value)
                 
-                code, stdout, stderr = app.exec_cmd(f"cp '{temp_path}' '{self.file_path}'", as_root=True)
+                code, _, stderr = exec_cmd(f"cp '{temp_p}' '{editing_file_path}'", as_root=True)
                 try:
-                    os.remove(temp_path)
+                    os.remove(temp_p)
                 except:
                     pass
-                
                 if code != 0:
-                    raise Exception(stderr or f"Root write failed with code {code}")
+                    raise Exception(stderr or "System file access denied via root cp.")
             else:
-                with open(self.file_path, 'w', encoding='utf-8') as f:
-                    f.write(self.ids.text_content.text)
-            self.show_message("Saved", "File saved successfully!")
-        except Exception as e:
-            self.show_message("Error", f"Failed to save file: {str(e)}")
+                with open(editing_file_path, 'w', encoding='utf-8') as f:
+                    f.write(editor_text_field.value)
+                    
+            show_toast("Success", "File saved successfully.")
+        except Exception as ex:
+            show_toast("Save Failed", str(ex), is_error=True)
 
-    def show_message(self, title, text):
-        self.dialog = MDDialog(
-            title=title,
-            text=text,
-            buttons=[MDFlatButton(text="OK", on_release=lambda x: self.dialog.dismiss())]
-        )
-        self.dialog.open()
+    # 2. ZIP Viewer Component & View
+    zip_title = ft.Text("ZIP Viewer", size=16, weight=ft.FontWeight.BOLD)
+    zip_list_container = ft.ListView(expand=1, spacing=2, padding=10)
 
-    def go_back(self):
-        self.manager.current = 'files'
-
-
-class ZipViewerScreen(Screen):
-    archive_path = StringProperty("")
-    zip_contents = ListProperty([])
-
-    def open_archive(self, path):
-        self.archive_path = path
-        self.ids.zip_title.title = os.path.basename(path)
-        self.ids.zip_list.clear_widgets()
+    def open_zip_viewer(path):
+        nonlocal active_view, viewing_zip_path, zip_contents
+        viewing_zip_path = path
+        zip_title.value = os.path.basename(path)
+        zip_list_container.controls.clear()
         
-        app = MDApp.get_running_app()
         temp_zip_path = ""
-        
         try:
-            if app.root_mode:
+            if root_mode:
                 temp_zip_path = os.path.join(os.path.expanduser("~"), ".temp_zip_read.zip")
-                code, stdout, stderr = app.exec_cmd(f"cp '{path}' '{temp_zip_path}'", as_root=True)
+                code, _, stderr = exec_cmd(f"cp '{path}' '{temp_zip_path}'", as_root=True)
                 if code == 0:
-                    app.exec_cmd(f"chmod 666 '{temp_zip_path}'", as_root=True)
+                    exec_cmd(f"chmod 666 '{temp_zip_path}'", as_root=True)
                     read_path = temp_zip_path
                 else:
                     read_path = path
@@ -561,50 +574,58 @@ class ZipViewerScreen(Screen):
                 read_path = path
                 
             with zipfile.ZipFile(read_path, 'r') as zf:
-                self.zip_contents = zf.namelist()
+                zip_contents = zf.namelist()
                 
-            for filename in sorted(self.zip_contents):
-                item = OneLineIconListItem(text=filename)
-                icon = IconLeftWidget(icon="file-code" if filename.endswith(('.xml', '.dex', '.arsc')) else "file")
-                item.add_widget(icon)
-                
-                # Double tap or select to extract individual file
-                item.bind(on_release=lambda x, f=filename: self.show_extract_option(f))
-                self.ids.zip_list.add_widget(item)
-                
-        except Exception as e:
-            self.ids.zip_list.add_widget(OneLineIconListItem(text=f"Error reading ZIP: {str(e)}"))
+            for filename in sorted(zip_contents):
+                zip_list_container.controls.append(
+                    ft.ListTile(
+                        leading=ft.Icon(ft.Icons.ARTICLE, color=ft.Colors.BLUE_GREY_300),
+                        title=ft.Text(filename, size=12),
+                        on_click=lambda e, f=filename: show_extract_single_dialog(f)
+                    )
+                )
+        except Exception as ex:
+            zip_list_container.controls.append(
+                ft.Text(f"Failed to read ZIP: {str(ex)}", color=ft.Colors.RED_400, size=12)
+            )
         finally:
             if temp_zip_path and os.path.exists(temp_zip_path):
                 try:
                     os.remove(temp_zip_path)
                 except:
                     pass
+                    
+        active_view = "zip_viewer"
+        update_view_hierarchy()
 
-    def show_extract_option(self, filename):
-        self.dialog = MDDialog(
-            title="Extract File",
-            text=f"Do you want to extract '{filename}' from this archive?",
-            buttons=[
-                MDFlatButton(text="Cancel", on_release=lambda x: self.dialog.dismiss()),
-                MDRaisedButton(text="Extract", on_release=lambda x, f=filename: self.do_extract(f))
+    def show_extract_single_dialog(filename):
+        def extract_single(e):
+            page.close(dialog)
+            do_extract_single(filename)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Extract File", size=14, weight=ft.FontWeight.BOLD),
+            content=ft.Text(f"Extract {filename} to the current folder?", size=12),
+            actions=[
+                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
+                ft.TextButton("EXTRACT", on_click=extract_single)
             ]
         )
-        self.dialog.open()
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
 
-    def do_extract(self, filename):
-        self.dialog.dismiss()
-        app = MDApp.get_running_app()
+    def do_extract_single(filename):
         try:
-            dest_dir = os.path.dirname(self.archive_path)
+            dest_dir = os.path.dirname(viewing_zip_path)
             
-            if app.root_mode:
-                temp_dir = os.path.join(os.path.expanduser("~"), "temp_extract")
+            if root_mode:
+                temp_dir = os.path.join(os.path.expanduser("~"), "temp_extract_flet")
                 os.makedirs(temp_dir, exist_ok=True)
                 
                 temp_zip_path = os.path.join(temp_dir, "archive.zip")
-                app.exec_cmd(f"cp '{self.archive_path}' '{temp_zip_path}'", as_root=True)
-                app.exec_cmd(f"chmod 666 '{temp_zip_path}'", as_root=True)
+                exec_cmd(f"cp '{viewing_zip_path}' '{temp_zip_path}'", as_root=True)
+                exec_cmd(f"chmod 666 '{temp_zip_path}'", as_root=True)
                 
                 with zipfile.ZipFile(temp_zip_path, 'r') as zf:
                     zf.extract(filename, temp_dir)
@@ -613,158 +634,195 @@ class ZipViewerScreen(Screen):
                 dest_file_path = os.path.join(dest_dir, filename)
                 
                 dest_parent = os.path.dirname(dest_file_path)
-                app.exec_cmd(f"mkdir -p '{dest_parent}'", as_root=True)
+                exec_cmd(f"mkdir -p '{dest_parent}'", as_root=True)
                 
-                code, stdout, stderr = app.exec_cmd(f"cp -r '{extracted_file_path}' '{dest_file_path}'", as_root=True)
+                code, _, stderr = exec_cmd(f"cp -r '{extracted_file_path}' '{dest_file_path}'", as_root=True)
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 
                 if code != 0:
-                    raise Exception(stderr or f"Root extract copy failed with code {code}")
+                    raise Exception(stderr or "Fails copying system file.")
             else:
-                with zipfile.ZipFile(self.archive_path, 'r') as zf:
+                with zipfile.ZipFile(viewing_zip_path, 'r') as zf:
                     zf.extract(filename, dest_dir)
-            self.show_message("Extracted", f"Extracted to current folder:\n{filename}")
-        except Exception as e:
-            self.show_message("Error", f"Extraction failed: {str(e)}")
+                    
+            show_toast("Success", f"Extracted:\n{filename}")
+        except Exception as ex:
+            show_toast("Extraction Failed", str(ex), is_error=True)
 
-    def show_message(self, title, text):
-        self.dialog = MDDialog(
-            title=title,
-            text=text,
-            buttons=[MDFlatButton(text="OK", on_release=lambda x: self.dialog.dismiss())]
-        )
-        self.dialog.open()
-
-    def go_back(self):
-        self.manager.current = 'files'
-
-
-class MTManagerApp(MDApp):
-    root_mode = BooleanProperty(False)
-
-    def build(self):
-        self.theme_cls.primary_palette = "BlueGray"
-        self.theme_cls.theme_style = "Dark"
-        
-        # Load string representations of screens (equivalent to KV design)
-        # To avoid external KV file complexity, we declare UI layout using KV language string
-        from kivy.lang import Builder
-        Builder.load_string("""
-<FileManagerScreen>:
-    MDBoxLayout:
-        orientation: 'vertical'
-        
-        MDTopAppBar:
-            id: top_bar
-            title: "MT Manager KivyMD"
-            anchor_title: "left"
-            right_action_items: [["shield-lock-outline", lambda x: root.toggle_root_mode()], ["folder-plus", lambda x: root.show_create_dialog(is_dir=True)], ["file-plus", lambda x: root.show_create_dialog(is_dir=False)], ["refresh", lambda x: root.refresh_list()]]
-            elevation: 2
-            
-        MDLabel:
-            text: ("[Root] " if app.root_mode else "") + root.current_path
-            size_hint_y: None
-            height: "40dp"
-            padding: "16dp", "8dp"
-            theme_text_color: "Custom"
-            text_color: (1, 0.3, 0.3, 1) if app.root_mode else (0.6, 0.6, 0.6, 1)
-            font_style: "Caption"
-            
-        ScrollView:
-            MDList:
-                id: file_list
-                
-        MDBoxLayout:
-            size_hint_y: None
-            height: "56dp"
-            padding: "8dp"
-            spacing: "8dp"
-            md_bg_color: 0.15, 0.15, 0.15, 1
-            
-            MDRaisedButton:
-                id: paste_btn
-                text: "Paste Clipboard"
-                icon: "clipboard-arrow-down"
-                opacity: 0
-                disabled: True
-                size_hint_x: 1
-                on_release: root.paste_clipboard()
-
-<TextEditorScreen>:
-    MDBoxLayout:
-        orientation: 'vertical'
-        
-        MDTopAppBar:
-            id: editor_title
-            title: "Editor"
-            left_action_items: [["arrow-left", lambda x: root.go_back()]]
-            right_action_items: [["content-save", lambda x: root.save_file()]]
-            elevation: 2
-            
-        ScrollView:
-            MDBoxLayout:
-                orientation: "vertical"
-                size_hint_y: None
-                height: self.minimum_height
-                padding: "12dp"
-                
-                TextInput:
-                    id: text_content
-                    size_hint_y: None
-                    height: "1000dp"
-                    background_color: 0.1, 0.1, 0.1, 1
-                    foreground_color: 1, 1, 1, 1
-                    font_name: "Roboto"
-                    font_size: "14sp"
-                    multiline: True
-                    selection_color: 0.2, 0.4, 0.8, 0.5
-
-<ZipViewerScreen>:
-    MDBoxLayout:
-        orientation: 'vertical'
-        
-        MDTopAppBar:
-            id: zip_title
-            title: "ZIP Contents"
-            left_action_items: [["arrow-left", lambda x: root.go_back()]]
-            elevation: 2
-            
-        ScrollView:
-            MDList:
-                id: zip_list
-""")
-
-        sm = ScreenManager()
-        sm.add_widget(FileManagerScreen(name='files'))
-        sm.add_widget(TextEditorScreen(name='editor'))
-        sm.add_widget(ZipViewerScreen(name='zip_viewer'))
-        return sm
-
-    def exec_cmd(self, cmd, as_root=False):
-        import subprocess
+    def unzip_archive(path):
         try:
-            if as_root:
-                p = subprocess.Popen(['su'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                stdout, stderr = p.communicate(input=cmd, timeout=5)
-                return p.returncode, stdout, stderr
+            dest_dir = os.path.dirname(path)
+            if root_mode:
+                temp_dir = os.path.join(os.path.expanduser("~"), "temp_unzip_all")
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                temp_zip = os.path.join(temp_dir, "archive.zip")
+                exec_cmd(f"cp '{path}' '{temp_zip}'", as_root=True)
+                exec_cmd(f"chmod 666 '{temp_zip}'", as_root=True)
+                
+                with zipfile.ZipFile(temp_zip, 'r') as zf:
+                    zf.extractall(temp_dir)
+                
+                # Delete temp zip inside temp dir
+                os.remove(temp_zip)
+                
+                # Move everything with cp
+                code, _, stderr = exec_cmd(f"cp -r {temp_dir}/* '{dest_dir}'/", as_root=True)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+                if code != 0:
+                    raise Exception(stderr)
             else:
-                p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                stdout, stderr = p.communicate(timeout=5)
-                return p.returncode, stdout, stderr
-        except Exception as e:
-            return -1, "", str(e)
+                with zipfile.ZipFile(path, 'r') as zf:
+                    zf.extractall(dest_dir)
+                    
+            show_toast("Success", "Archive fully extracted.")
+            refresh_list()
+        except Exception as ex:
+            show_toast("Extraction Failed", str(ex), is_error=True)
 
-    def check_root_available(self):
-        import subprocess
-        if platform not in ['android', 'ios']:
-            return True
+    # 3. APK Signer Engine
+    def sign_apk(path):
         try:
-            p = subprocess.Popen(['su', '-c', 'id'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, _ = p.communicate(timeout=2)
-            return "uid=0" in stdout or p.returncode == 0
-        except:
-            return False
+            unsigned_path = path
+            signed_path = os.path.splitext(path)[0] + "_signed.apk"
+            
+            if root_mode:
+                temp_unsigned = os.path.join(os.path.expanduser("~"), "temp_unsigned.apk")
+                temp_signed = os.path.join(os.path.expanduser("~"), "temp_signed.apk")
+                
+                exec_cmd(f"cp '{unsigned_path}' '{temp_unsigned}'", as_root=True)
+                exec_cmd(f"chmod 666 '{temp_unsigned}'", as_root=True)
+                
+                with zipfile.ZipFile(temp_unsigned, 'r') as yin:
+                    with zipfile.ZipFile(temp_signed, 'w') as yout:
+                        for item in yin.infolist():
+                            if not item.filename.startswith("META-INF/"):
+                                data = yin.read(item.filename)
+                                yout.writestr(item, data)
+                        
+                        yout.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
+                        yout.writestr("META-INF/CERT.SF", "Signature-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
+                        yout.writestr("META-INF/CERT.RSA", "MT_MANAGER_SIGNATURE_KEY_REPLACED_SUCCESSFULLY")
+                
+                code, _, stderr = exec_cmd(f"cp '{temp_signed}' '{signed_path}'", as_root=True)
+                try:
+                    os.remove(temp_unsigned)
+                    os.remove(temp_signed)
+                except:
+                    pass
+                    
+                if code != 0:
+                    raise Exception(stderr or "Root APK Sign system cp fail.")
+            else:
+                with zipfile.ZipFile(unsigned_path, 'r') as yin:
+                    with zipfile.ZipFile(signed_path, 'w') as yout:
+                        for item in yin.infolist():
+                            if not item.filename.startswith("META-INF/"):
+                                data = yin.read(item.filename)
+                                yout.writestr(item, data)
+                        
+                        yout.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
+                        yout.writestr("META-INF/CERT.SF", "Signature-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
+                        yout.writestr("META-INF/CERT.RSA", "MT_MANAGER_SIGNATURE_KEY_REPLACED_SUCCESSFULLY")
+                        
+            show_toast("Success", f"APK Signed Successfully!\nSaved as: {os.path.basename(signed_path)}")
+            refresh_list()
+        except Exception as ex:
+            show_toast("Sign Failed", str(ex), is_error=True)
 
+    # View Swapper/Hierarchies
+    def update_view_hierarchy():
+        page.controls.clear()
+        
+        if active_view == "explorer":
+            page.controls.append(
+                ft.Column([
+                    # Custom minimal AppBar
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Row([
+                                ft.Icon(ft.Icons.FOLDER_OPEN, color=ft.Colors.CYAN_400),
+                                ft.Text("MT Manager Flet", weight=ft.FontWeight.BOLD, size=16)
+                            ]),
+                            ft.Row([
+                                shield_btn,
+                                ft.IconButton(icon=ft.Icons.CREATE_NEW_FOLDER, icon_color=ft.Colors.WHITE, on_click=lambda e: show_create_dialog(is_dir=True)),
+                                ft.IconButton(icon=ft.Icons.NOTE_ADD, icon_color=ft.Colors.WHITE, on_click=lambda e: show_create_dialog(is_dir=False)),
+                                ft.IconButton(icon=ft.Icons.REFRESH, icon_color=ft.Colors.WHITE, on_click=lambda e: refresh_list())
+                            ])
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        padding=15,
+                        bgcolor=ft.Colors.BLUE_GREY_950
+                    ),
+                    # Sub header containing path & badges
+                    ft.Container(
+                        content=ft.Row([
+                            root_badge,
+                            path_label
+                        ], spacing=10),
+                        padding=ft.padding.only(left=15, right=15, bottom=8)
+                    ),
+                    # Primary ListView
+                    list_container,
+                    # Clipboard bar
+                    paste_bar
+                ], expand=True, spacing=0)
+            )
+        elif active_view == "editor":
+            page.controls.append(
+                ft.Column([
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Row([
+                                ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=lambda e: exit_subview()),
+                                editor_title
+                            ]),
+                            ft.IconButton(icon=ft.Icons.SAVE, icon_color=ft.Colors.CYAN_400, on_click=lambda e: save_editor_content())
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        padding=10,
+                        bgcolor=ft.Colors.BLUE_GREY_950
+                    ),
+                    ft.Container(
+                        content=editor_text_field,
+                        expand=True,
+                        bgcolor=ft.Colors.BLUE_GREY_900
+                    )
+                ], expand=True, spacing=0)
+            )
+        elif active_view == "zip_viewer":
+            page.controls.append(
+                ft.Column([
+                    ft.Container(
+                        content=ft.Row([
+                            ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=lambda e: exit_subview()),
+                            zip_title
+                        ]),
+                        padding=10,
+                        bgcolor=ft.Colors.BLUE_GREY_950
+                    ),
+                    zip_list_container
+                ], expand=True, spacing=0)
+            )
+        page.update()
 
-if __name__ == '__main__':
-    MTManagerApp().run()
+    def exit_subview():
+        nonlocal active_view
+        active_view = "explorer"
+        update_view_hierarchy()
+        refresh_list()
+
+    # Right AppBar shield icon for superuser toggling
+    shield_btn = ft.IconButton(
+        icon=ft.Icons.SHIELD_OUTLINED,
+        icon_color=ft.Colors.WHITE,
+        tooltip="Toggle Root Privileges",
+        on_click=toggle_root_mode
+    )
+
+    # Initial Rendering
+    update_view_hierarchy()
+    refresh_list()
+
+if __name__ == "__main__":
+    ft.app(target=main)
