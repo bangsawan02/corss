@@ -23,7 +23,7 @@ jobs:
     - name: Set up Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.22.x'
+        flutter-version: '3.41.7'
         channel: 'stable'
         cache: true
 
@@ -59,7 +59,7 @@ jobs:
 
     - name: Build Android Release APK
       run: |
-        flet build apk --split-per-abi
+        yes | flet build apk --split-per-abi
 
     # Save pip cache (runs always even on failure)
     - name: Save Pip Cache
