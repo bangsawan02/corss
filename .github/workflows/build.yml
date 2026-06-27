@@ -31,20 +31,18 @@ jobs:
       with:
         python-version: '3.11'
 
-    # Cache pip dependencies (always cache using always() condition as requested)
-    - name: Cache Pip Packages
-      uses: actions/cache@v4
-      if: always()
+    # Restore pip cache
+    - name: Restore Pip Cache
+      uses: actions/cache/restore@v4
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
 
-    # Cache Gradle dependencies for faster subsequent builds (always cache using always() condition)
-    - name: Cache Gradle Caches
-      uses: actions/cache@v4
-      if: always()
+    # Restore Gradle cache
+    - name: Restore Gradle Cache
+      uses: actions/cache/restore@v4
       with:
         path: |
           ~/.gradle/caches
@@ -60,7 +58,25 @@ jobs:
 
     - name: Build Android Release APK
       run: |
-        flet build apk --target main.py
+        flet build apk
+
+    # Save pip cache (runs always even on failure)
+    - name: Save Pip Cache
+      uses: actions/cache/save@v4
+      if: always()
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+
+    # Save Gradle cache (runs always even on failure)
+    - name: Save Gradle Cache
+      uses: actions/cache/save@v4
+      if: always()
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
     - name: Upload Compiled APK
       uses: actions/upload-artifact@v4
