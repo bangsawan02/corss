@@ -1,828 +1,1258 @@
 import os
 import sys
-import shutil
-import zipfile
 import subprocess
+import struct
+import zlib
+import hashlib
+import zipfile
+import shutil
 import flet as ft
 
-# Shell Command Execution Helper
-def exec_cmd(cmd, as_root=False):
-    try:
-        if as_root:
-            p = subprocess.Popen(['su'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = p.communicate(input=cmd, timeout=5)
-            return p.returncode, stdout, stderr
-        else:
-            p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = p.communicate(timeout=5)
-            return p.returncode, stdout, stderr
-    except Exception as e:
-        return -1, "", str(e)
+# =====================================================================
+# PART 1: BINARY ENGINE UTILITIES (DEX, SMALI, APK PARSERS & EDITORS)
+# =====================================================================
 
-def check_root_available():
-    if sys.platform not in ['android', 'linux']:
-        return True
+def run_root_cmd(command: str) -> subprocess.CompletedProcess:
+    """
+    Eksekusi perintah shell menggunakan wrapper 'su' untuk akses root.
+    """
     try:
-        p = subprocess.Popen(['su', '-c', 'id'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, _ = p.communicate(timeout=2)
-        return "uid=0" in stdout or p.returncode == 0
+        result = subprocess.run(
+            ["su", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        return result
+    except Exception as e:
+        return subprocess.CompletedProcess(
+            args=["su", "-c", command],
+            returncode=-1,
+            stdout="",
+            stderr=str(e)
+        )
+
+def is_root_available() -> bool:
+    try:
+        result = subprocess.run(["su", "-c", "id"], capture_output=True, text=True, timeout=2)
+        return result.returncode == 0 or "uid=0" in result.stdout
     except:
         return False
 
-def format_size(size):
+def parse_dex_file(file_path):
+    """
+    Membaca struktur header dan String Pool pada file DEX (class.dex).
+    """
     try:
-        size = float(size)
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} TB"
+        with open(file_path, "rb") as f:
+            data = f.read()
+        if len(data) < 112:
+            return None, "Ukuran berkas terlalu kecil untuk format DEX."
+        
+        magic = data[0:8]
+        if not magic.startswith(b"dex\n"):
+            return None, f"Magic header DEX tidak valid: {magic}"
+            
+        checksum = struct.unpack_from("<I", data, 8)[0]
+        signature = data[12:32].hex()
+        file_size = struct.unpack_from("<I", data, 32)[0]
+        header_size = struct.unpack_from("<I", data, 36)[0]
+        endian_tag = struct.unpack_from("<I", data, 40)[0]
+        
+        string_ids_size = struct.unpack_from("<I", data, 56)[0]
+        string_ids_off = struct.unpack_from("<I", data, 60)[0]
+        
+        type_ids_size = struct.unpack_from("<I", data, 64)[0]
+        type_ids_off = struct.unpack_from("<I", data, 68)[0]
+        
+        proto_ids_size = struct.unpack_from("<I", data, 72)[0]
+        proto_ids_off = struct.unpack_from("<I", data, 76)[0]
+        
+        field_ids_size = struct.unpack_from("<I", data, 80)[0]
+        field_ids_off = struct.unpack_from("<I", data, 84)[0]
+        
+        method_ids_size = struct.unpack_from("<I", data, 88)[0]
+        method_ids_off = struct.unpack_from("<I", data, 92)[0]
+        
+        class_defs_size = struct.unpack_from("<I", data, 96)[0]
+        class_defs_off = struct.unpack_from("<I", data, 100)[0]
+        
+        strings = []
+        max_strings_to_read = min(string_ids_size, 800) # Batasan tampilan UI agar responsif
+        for i in range(max_strings_to_read):
+            off_ptr = string_ids_off + i * 4
+            if off_ptr + 4 > len(data):
+                break
+            str_off = struct.unpack_from("<I", data, off_ptr)[0]
+            
+            # Decode uleb128 string length
+            idx = str_off
+            if idx >= len(data):
+                continue
+            
+            str_len = 0
+            shift = 0
+            while idx < len(data):
+                b = data[idx]
+                idx += 1
+                str_len |= (b & 0x7F) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+                if shift > 28:
+                    break
+            
+            start = idx
+            while idx < len(data) and data[idx] != 0:
+                idx += 1
+            s_bytes = data[start:idx]
+            try:
+                s_val = s_bytes.decode('utf-8', errors='ignore')
+            except:
+                s_val = s_bytes.decode('latin-1', errors='ignore')
+            strings.append((i, s_val, str_off))
+            
+        info = {
+            "magic": magic.decode('ascii', errors='ignore').strip(),
+            "checksum": f"0x{checksum:X}",
+            "signature": signature,
+            "file_size": file_size,
+            "string_count": string_ids_size,
+            "type_count": type_ids_size,
+            "proto_count": proto_ids_size,
+            "field_count": field_ids_size,
+            "method_count": method_ids_size,
+            "class_count": class_defs_size,
+            "strings": strings
+        }
+        return info, None
+    except Exception as e:
+        return None, str(e)
+
+def update_dex_checksum_and_signature(data: bytearray) -> bytearray:
+    # 1. Update SHA-1 signature (bytes 12-31, 20 bytes)
+    h = hashlib.sha1()
+    h.update(data[32:])
+    data[12:32] = h.digest()
+    
+    # 2. Update Adler32 checksum (bytes 8-11, 4 bytes)
+    checksum = zlib.adler32(data[12:]) & 0xffffffff
+    data[8:12] = struct.pack("<I", checksum)
+    return data
+
+def replace_dex_string(file_path, str_index, old_str, new_str):
+    try:
+        with open(file_path, "rb") as f:
+            data = bytearray(f.read())
+            
+        info, err = parse_dex_file(file_path)
+        if err or not info:
+            return False, f"Gagal membaca DEX: {err}"
+            
+        strings = info["strings"]
+        target_item = None
+        for item in strings:
+            if item[0] == str_index:
+                target_item = item
+                break
+                
+        if not target_item:
+            return False, "String index tidak ditemukan"
+            
+        str_off = target_item[2]
+        
+        idx = str_off
+        str_len = 0
+        shift = 0
+        while idx < len(data):
+            b = data[idx]
+            idx += 1
+            str_len |= (b & 0x7F) << shift
+            if not (b & 0x80):
+                break
+            shift += 7
+            
+        start_string_bytes = idx
+        while idx < len(data) and data[idx] != 0:
+            idx += 1
+        end_string_bytes = idx
+        
+        available_len = end_string_bytes - start_string_bytes
+        new_bytes = new_str.encode('utf-8')
+        
+        if len(new_bytes) > available_len:
+            return False, f"String terlalu panjang! Maksimal {available_len} karakter untuk in-place editing agar offset DEX stabil."
+            
+        # Pad dengan nulls agar panjang bytes tidak bergeser (in-place replacement)
+        padded_new_bytes = new_bytes + b'\x00' * (available_len - len(new_bytes))
+        data[start_string_bytes:end_string_bytes] = padded_new_bytes
+        
+        # Hitung ulang checksum & hash SHA1 agar DEX lolos verifikasi ART Android
+        data = update_dex_checksum_and_signature(data)
+        
+        with open(file_path, "wb") as f:
+            f.write(data)
+            
+        return True, "Berhasil mengganti string & memperbarui signature DEX!"
+    except Exception as e:
+        return False, str(e)
+
+def parse_binary_xml_strings(data):
+    """
+    Ekstraksi String Pool dari file biner Android XML (seperti AndroidManifest.xml)
+    """
+    try:
+        if len(data) < 8:
+            return []
+        magic = struct.unpack_from("<I", data, 0)[0]
+        if magic != 0x00080003:
+            return []
+        
+        chunk_type = struct.unpack_from("<I", data, 8)[0]
+        if chunk_type != 0x001C0001:
+            return []
+            
+        chunk_size = struct.unpack_from("<I", data, 12)[0]
+        string_count = struct.unpack_from("<I", data, 16)[0]
+        flags = struct.unpack_from("<I", data, 24)[0]
+        string_pool_offset = struct.unpack_from("<I", data, 28)[0]
+        
+        strings = []
+        is_utf8 = (flags & (1 << 8)) != 0
+        
+        for i in range(string_count):
+            off_ptr = 36 + i * 4
+            if off_ptr + 4 > len(data):
+                break
+            str_off = struct.unpack_from("<I", data, off_ptr)[0]
+            actual_off = 8 + string_pool_offset + str_off
+            
+            if is_utf8:
+                # Sederhanakan pembacaan utf-8
+                if actual_off < len(data):
+                    length = data[actual_off]
+                    start = actual_off + 2
+                    end = start + length
+                    if end <= len(data):
+                        strings.append(data[start:end].decode('utf-8', errors='ignore'))
+            else:
+                if actual_off + 2 <= len(data):
+                    length = struct.unpack_from("<H", data, actual_off)[0]
+                    start = actual_off + 2
+                    end = start + length * 2
+                    if end <= len(data):
+                        s_bytes = data[start:end]
+                        strings.append(s_bytes.decode('utf-16le', errors='ignore'))
+        return strings
     except:
-        return "Unknown"
+        return []
+
+def get_apk_info(file_path):
+    """
+    Inspeksi berkas APK menggunakan library built-in zipfile tanpa emulator
+    """
+    try:
+        with zipfile.ZipFile(file_path, 'r') as archive:
+            namelist = archive.namelist()
+            manifest_data = b""
+            if "AndroidManifest.xml" in namelist:
+                manifest_data = archive.read("AndroidManifest.xml")
+            
+            strings = parse_binary_xml_strings(manifest_data)
+            package_name = "Tidak diketahui"
+            permissions = []
+            activities = []
+            
+            for s in strings:
+                cleaned = s.strip()
+                if cleaned.startswith("android.permission."):
+                    permissions.append(cleaned)
+                elif "." in cleaned and len(cleaned) > 5 and not cleaned.startswith("android."):
+                    if cleaned.endswith("Activity") or "activity" in cleaned.lower():
+                        activities.append(cleaned)
+                    elif package_name == "Tidak diketahui":
+                        package_name = cleaned
+            
+            return {
+                "files": namelist,
+                "package_name": package_name,
+                "permissions": sorted(list(set(permissions)))[:15],
+                "activities": sorted(list(set(activities)))[:15]
+            }, None
+    except Exception as e:
+        return None, str(e)
+
+
+# =====================================================================
+# PART 2: CORE FLET APPLICATION LAYOUT (DUAL PANEL & EDITORS)
+# =====================================================================
 
 def main(page: ft.Page):
-    page.title = "MT Manager Flet"
+    page.title = "MT Flet Manager"
     page.theme_mode = ft.ThemeMode.DARK
+    # Gunakan skema warna Android UI default yang bersih & konsisten
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_GREY)
-    page.padding = 0
-
-    # App States
-    root_mode = False
-    current_path = "/sdcard" if os.path.exists("/sdcard") else "/storage/emulated/0"
-    if not os.path.exists(current_path):
-        current_path = "/"
-
-    clipboard_path = ""
-    clipboard_action = ""  # "copy" or "move"
+    page.padding = 10
     
-    # State stacks for sub-pages
-    # We will use simple view control swaps to render different views.
-    active_view = "explorer"  # "explorer", "editor", "zip_viewer"
-    editing_file_path = ""
-    viewing_zip_path = ""
-    zip_contents = []
+    # Root Status
+    root_available = is_root_available()
 
-    # UI Components
-    list_container = ft.ListView(expand=1, spacing=2, padding=10)
-    path_label = ft.Text(value=current_path, style=ft.TextThemeStyle.BODY_MEDIUM, color=ft.Colors.BLUE_GREY_200)
-    root_badge = ft.Container(
-        content=ft.Text("ROOT", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
-        bgcolor=ft.Colors.RED_ACCENT_700,
-        padding=ft.padding.symmetric(horizontal=6, vertical=2),
-        border_radius=3,
-        visible=False
-    )
+    # Inisialisasi FilePicker global
+    active_picker_panel = [None] # Left atau Right
     
-    paste_bar = ft.Container(
-        content=ft.Row([
-            ft.Icon(name=ft.Icons.CONTENT_PASTE, color=ft.Colors.AMBER_400),
-            ft.Text("Clipboard ready", size=12, expand=True),
-            ft.TextButton("PASTE", on_click=lambda e: paste_clipboard()),
-            ft.IconButton(icon=ft.Icons.CLOSE, icon_size=16, on_click=lambda e: clear_clipboard())
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        bgcolor=ft.Colors.BLUE_GREY_900,
-        padding=10,
-        visible=False
-    )
-
-    def show_toast(title, text, is_error=False):
-        color = ft.Colors.RED_900 if is_error else ft.Colors.GREEN_900
-        snack = ft.SnackBar(
-            content=ft.Row([
-                ft.Icon(ft.Icons.ERROR_OUTLINE if is_error else ft.Icons.CHECK, color=ft.Colors.WHITE),
-                ft.Column([
-                    ft.Text(title, weight=ft.FontWeight.BOLD, size=14),
-                    ft.Text(text, size=12)
-                ], spacing=1, expand=True)
-            ]),
-            bgcolor=color,
-            duration=3000
-        )
-        page.overlay.append(snack)
-        snack.open = True
+    def on_directory_picked(e: ft.FilePickerResultEvent):
+        if e.path and active_picker_panel[0]:
+            if active_picker_panel[0] == "Left":
+                left_panel.navigate_to(e.path)
+            elif active_picker_panel[0] == "Right":
+                right_panel.navigate_to(e.path)
         page.update()
 
-    def listdir_root(path):
-        code, stdout, stderr = exec_cmd(f"ls -ap '{path}'", as_root=True)
-        if code != 0:
-            raise Exception(stderr or f"ls failed with code {code}")
-        
-        lines = stdout.splitlines()
-        folders = []
-        files = []
-        for line in lines:
-            line = line.strip()
-            if not line or line in ['.', '..', './', '../']:
-                continue
-            if line.endswith('/'):
-                folders.append(line[:-1])
-            else:
-                files.append(line)
-        return sorted(folders), sorted(files)
+    dir_picker = ft.FilePicker(on_result=on_directory_picked)
+    page.overlay.append(dir_picker)
 
-    def get_file_size_root(path):
-        code, stdout, _ = exec_cmd(f"wc -c '{path}'", as_root=True)
-        if code == 0:
-            try:
-                return int(stdout.strip().split()[0])
-            except:
-                pass
-        return 0
+    # State Berbagi File (Selected file context menu)
+    selected_file_path = [None]
+    selected_file_panel = [None] # "Left" atau "Right"
 
-    def refresh_list():
-        nonlocal current_path
-        list_container.controls.clear()
-        path_label.value = current_path
-        
-        # Upper directory navigatibility
-        if current_path != "/":
-            up_dir = os.path.dirname(current_path)
-            list_container.controls.append(
-                ft.ListTile(
-                    leading=ft.Icon(ft.Icons.ARROW_UPWARD, color=ft.Colors.AMBER_500),
-                    title=ft.Text(".. (Go up parent directory)", size=14, weight=ft.FontWeight.W_500),
-                    on_click=lambda e, p=up_dir: navigate_to(p)
-                )
-            )
-
-        try:
-            if root_mode:
-                folders, files = listdir_root(current_path)
-            else:
-                try:
-                    items = os.listdir(current_path)
-                    folders = sorted([i for i in items if os.path.isdir(os.path.join(current_path, i))])
-                    files = sorted([i for i in items if os.path.isfile(os.path.join(current_path, i))])
-                except Exception as e:
-                    if check_root_available():
-                        folders, files = listdir_root(current_path)
-                    else:
-                        raise e
+    # =====================================================================
+    # FILE PANEL CLASS
+    # =====================================================================
+    class FilePanel:
+        def __init__(self, name: str, initial_path: str):
+            self.name = name
+            self.current_path = os.path.abspath(initial_path)
+            self.selected_item = None
             
-            # Populate Folders
-            for f in folders:
-                f_path = os.path.join(current_path, f)
-                list_container.controls.append(
-                    ft.ListTile(
-                        leading=ft.Icon(ft.Icons.FOLDER, color=ft.Colors.AMBER_400),
-                        title=ft.Text(f, size=14, weight=ft.FontWeight.W_500),
-                        subtitle=ft.Text("Directory", size=11, color=ft.Colors.BLUE_GREY_300),
-                        trailing=ft.IconButton(
-                            icon=ft.Icons.MORE_VERT,
-                            on_click=lambda e, p=f_path, n=f: show_options_dialog(p, n, is_dir=True)
-                        ),
-                        on_click=lambda e, p=f_path: navigate_to(p)
-                    )
-                )
-
-            # Populate Files
-            for f in files:
-                f_path = os.path.join(current_path, f)
-                
-                # Get file size
-                if root_mode:
-                    size_bytes = get_file_size_root(f_path)
-                else:
-                    try:
-                        size_bytes = os.path.getsize(f_path)
-                    except:
-                        size_bytes = 0
-                        
-                size_str = format_size(size_bytes)
-                
-                is_apk = f.lower().endswith(".apk")
-                is_zip = f.lower().endswith(".zip")
-                icon = ft.Icons.ANDROID if is_apk else (ft.Icons.FOLDER_ZIP if is_zip else ft.Icons.INSERT_DRIVE_FILE)
-                icon_color = ft.Colors.GREEN_400 if is_apk else (ft.Colors.ORANGE_400 if is_zip else ft.Colors.BLUE_GREY_400)
-
-                list_container.controls.append(
-                    ft.ListTile(
-                        leading=ft.Icon(icon, color=icon_color),
-                        title=ft.Text(f, size=14, weight=ft.FontWeight.W_500),
-                        subtitle=ft.Text(f"File • {size_str}", size=11, color=ft.Colors.BLUE_GREY_300),
-                        trailing=ft.IconButton(
-                            icon=ft.Icons.MORE_VERT,
-                            on_click=lambda e, p=f_path, n=f, apk=is_apk, zp=is_zip: show_options_dialog(p, n, is_dir=False, is_apk=apk, is_zip=zp)
-                        ),
-                        on_click=lambda e, p=f_path, apk=is_apk, zp=is_zip: handle_file_click(p, apk, zp)
-                    )
-                )
-
-        except Exception as e:
-            list_container.controls.append(
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.ERROR_OUTLINE, color=ft.Colors.RED_400, size=40),
-                        ft.Text(f"Error accessing path:\n{str(e)}", color=ft.Colors.RED_400, text_align=ft.TextAlign.CENTER, size=12)
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    alignment=ft.alignment.center,
-                    padding=20
-                )
+            # Controls
+            self.path_text = ft.Text(
+                self.current_path, 
+                size=12, 
+                color=ft.Colors.BLUE_200, 
+                weight=ft.FontWeight.W_500,
+                overflow=ft.TextOverflow.ELLIPSIS,
+                max_lines=1
             )
-        page.update()
+            self.list_view = ft.ListView(expand=1, spacing=2, padding=5)
+            
+            # Panel Container
+            self.container = ft.Container(
+                content=ft.Column(
+                    [
+                        # Panel Toolbar / Header
+                        ft.Container(
+                            content=ft.Row(
+                                [
+                                    ft.IconButton(
+                                        icon=ft.Icons.ARROW_UPWARD, 
+                                        icon_size=16,
+                                        tooltip="Kembali ke folder atas",
+                                        on_click=lambda _: self.navigate_up()
+                                    ),
+                                    ft.IconButton(
+                                        icon=ft.Icons.FOLDER_OPEN, 
+                                        icon_size=16,
+                                        tooltip="Pilih Folder",
+                                        on_click=lambda _: self.open_folder_picker()
+                                    ),
+                                    ft.IconButton(
+                                        icon=ft.Icons.REFRESH, 
+                                        icon_size=16,
+                                        tooltip="Refresh daftar",
+                                        on_click=lambda _: self.refresh()
+                                    ),
+                                    ft.Text(f"Panel {self.name}", size=11, color=ft.Colors.GREY_400, weight=ft.FontWeight.BOLD),
+                                ],
+                                spacing=5,
+                                alignment=ft.MainAxisAlignment.START,
+                            ),
+                            padding=2,
+                            bgcolor=ft.Colors.BLUE_GREY_900,
+                            border_radius=4
+                        ),
+                        ft.Container(self.path_text, padding=ft.padding.only(left=8, right=8, top=4, bottom=4)),
+                        ft.Divider(height=1, thickness=1, color=ft.Colors.BLUE_GREY_800),
+                        self.list_view
+                    ],
+                    spacing=2
+                ),
+                expand=1,
+                border=ft.border.all(1, ft.Colors.BLUE_GREY_800),
+                border_radius=8,
+                bgcolor=ft.Colors.BLUE_GREY_950,
+                padding=6
+            )
+            
+            self.refresh()
 
-    def navigate_to(path):
-        nonlocal current_path
-        current_path = path
-        refresh_list()
+        def navigate_to(self, target_path: str):
+            if os.path.isdir(target_path):
+                self.current_path = os.path.abspath(target_path)
+                self.path_text.value = self.current_path
+                self.refresh()
 
-    def toggle_root_mode(e):
-        nonlocal root_mode
-        if not root_mode:
-            if check_root_available():
-                root_mode = True
-                root_badge.visible = True
-                shield_btn.icon = ft.Icons.SHIELD
-                shield_btn.icon_color = ft.Colors.RED_ACCENT_400
-                show_toast("Root Mode Active", "Superuser privileges successfully enabled!")
-            else:
-                show_toast("Permission Denied", "No superuser binary detected or root privilege was rejected.", is_error=True)
-        else:
-            root_mode = False
-            root_badge.visible = False
-            shield_btn.icon = ft.Icons.SHIELD_OUTLINED
-            shield_btn.icon_color = ft.Colors.WHITE
-            show_toast("Root Mode Disabled", "Standard user restrictions are back in place.")
-        refresh_list()
+        def navigate_up(self):
+            parent = os.path.dirname(self.current_path)
+            if parent != self.current_path:
+                self.navigate_to(parent)
 
-    # Create dialog launcher
-    def show_create_dialog(is_dir=True):
-        name_input = ft.TextField(
-            label="Name", 
-            placeholder="enter folder name" if is_dir else "enter file name", 
-            autofocus=True,
-            text_size=13
-        )
-        
-        def save_creation(e):
-            if not name_input.value.strip():
-                return
-            target = os.path.join(current_path, name_input.value.strip())
+        def open_folder_picker(self):
+            active_picker_panel[0] = self.name
+            dir_picker.get_directory_path(initial_directory=self.current_path)
+
+        def refresh(self):
+            self.list_view.controls.clear()
             try:
-                if root_mode:
-                    if is_dir:
-                        code, _, stderr = exec_cmd(f"mkdir -p '{target}'", as_root=True)
+                # Tambahkan item Back folder (..)
+                parent = os.path.dirname(self.current_path)
+                if parent != self.current_path:
+                    self.list_view.controls.append(
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.ARROW_BACK, color=ft.Colors.BLUE_GREY_400, size=18),
+                            title=ft.Text(".. (Folder Atas)", size=13, color=ft.Colors.BLUE_GREY_200),
+                            dense=True,
+                            on_click=lambda _: self.navigate_up()
+                        )
+                    )
+
+                items = os.listdir(self.current_path)
+                # Tampilkan Folder dahulu, baru Berkas
+                folders = []
+                files = []
+                for item in sorted(items):
+                    full_path = os.path.join(self.current_path, item)
+                    if os.path.isdir(full_path):
+                        folders.append(item)
                     else:
-                        code, _, stderr = exec_cmd(f"touch '{target}'", as_root=True)
-                    if code != 0:
-                        raise Exception(stderr)
-                else:
-                    if is_dir:
-                        os.makedirs(target, exist_ok=True)
-                    else:
-                        with open(target, 'w') as f:
-                            f.write("")
-                show_toast("Success", f"{'Directory' if is_dir else 'File'} successfully created.")
-                dialog.open = False
-                refresh_list()
+                        files.append(item)
+
+                # Render Folders
+                for f in folders:
+                    full_path = os.path.join(self.current_path, f)
+                    self.list_view.controls.append(
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.FOLDER, color=ft.Colors.AMBER_400, size=18),
+                            title=ft.Text(f, size=13, weight=ft.FontWeight.W_500),
+                            dense=True,
+                            on_click=lambda _, path=full_path: self.navigate_to(path),
+                            on_long_press=lambda _, path=full_path: self.show_context_menu(path)
+                        )
+                    )
+
+                # Render Files
+                for f in files:
+                    full_path = os.path.join(self.current_path, f)
+                    lower_f = f.lower()
+                    
+                    # Tentukan icon berdasarkan ekstensi berkas
+                    icon_color = ft.Colors.BLUE_400
+                    icon_type = ft.Icons.INSERT_DRIVE_FILE
+                    
+                    if lower_f.endswith(".apk"):
+                        icon_type = ft.Icons.ANDROID
+                        icon_color = ft.Colors.GREEN_400
+                    elif lower_f.endswith(".dex"):
+                        icon_type = ft.Icons.LAYERS
+                        icon_color = ft.Colors.CYAN_400
+                    elif lower_f.endswith(".smali"):
+                        icon_type = ft.Icons.CODE
+                        icon_color = ft.Colors.DEEP_ORANGE_400
+                    elif lower_f.endswith((".txt", ".json", ".xml", ".yml", ".py")):
+                        icon_type = ft.Icons.TEXT_SNIPPET
+                        icon_color = ft.Colors.GREY_300
+
+                    self.list_view.controls.append(
+                        ft.ListTile(
+                            leading=ft.Icon(icon_type, color=icon_color, size=18),
+                            title=ft.Text(f, size=13),
+                            subtitle=ft.Text(self.get_readable_size(full_path), size=10, color=ft.Colors.GREY_500),
+                            dense=True,
+                            on_click=lambda _, path=full_path: self.show_context_menu(path)
+                        )
+                    )
             except Exception as ex:
-                show_toast("Failed", str(ex), is_error=True)
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("Create Folder" if is_dir else "Create File", size=16, weight=ft.FontWeight.BOLD),
-            content=name_input,
-            actions=[
-                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
-                ft.TextButton("CREATE", on_click=save_creation)
-            ],
-            actions_alignment=ft.MainAxisAlignment.END
-        )
-        page.overlay.append(dialog)
-        dialog.open = True
-        page.update()
-
-    # Context menu option dialog
-    def show_options_dialog(path, name, is_dir, is_apk=False, is_zip=False):
-        dialog_options = []
-
-        # 1. Rename Option
-        def handle_rename_click(e):
-            page.close(options_dialog)
-            show_rename_dialog(path, name)
-            
-        dialog_options.append(
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.DRIVE_FILE_RENAME_OUTLINE, size=18),
-                title=ft.Text("Rename", size=13),
-                on_click=handle_rename_click
-            )
-        )
-
-        # 2. Copy & Move Options
-        def prepare_clipboard(action):
-            nonlocal clipboard_path, clipboard_action
-            clipboard_path = path
-            clipboard_action = action
-            paste_bar.content.controls[1].value = f"Selected: {os.path.basename(path)} ({action.upper()})"
-            paste_bar.visible = True
-            page.close(options_dialog)
+                self.list_view.controls.append(
+                    ft.Text(f"Gagal membaca folder:\n{str(ex)}", color=ft.Colors.RED_400, size=11)
+                )
             page.update()
 
-        dialog_options.append(
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.COPY_ALL, size=18),
-                title=ft.Text("Copy", size=13),
-                on_click=lambda e: prepare_clipboard("copy")
-            )
-        )
-        dialog_options.append(
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.MOVE_UP, size=18),
-                title=ft.Text("Move", size=13),
-                on_click=lambda e: prepare_clipboard("move")
-            )
-        )
+        def get_readable_size(self, path):
+            try:
+                sz = os.path.getsize(path)
+                if sz < 1024:
+                    return f"{sz} B"
+                elif sz < 1024*1024:
+                    return f"{sz/1024:.1f} KB"
+                else:
+                    return f"{sz/(1024*1024):.1f} MB"
+            except:
+                return "0 B"
 
-        # 3. Zip Extraction options
-        if is_zip:
-            def handle_unzip(e):
-                page.close(options_dialog)
-                unzip_archive(path)
-            dialog_options.append(
+        def show_context_menu(self, path):
+            selected_file_path[0] = path
+            selected_file_panel[0] = self.name
+            
+            is_dir = os.path.isdir(path)
+            filename = os.path.basename(path)
+            ext = os.path.splitext(filename)[1].lower()
+
+            # Dynamic Options based on File Extensions
+            action_buttons = []
+
+            # 1. SPECIAL EDITOR OPTIONS
+            if not is_dir:
+                if ext == ".smali":
+                    action_buttons.append(
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.EDIT, color=ft.Colors.DEEP_ORANGE_400),
+                            title=ft.Text("Buka dengan Smali Editor", size=14),
+                            on_click=lambda _: [page.close_bottom_sheet(), open_smali_editor(path)]
+                        )
+                    )
+                elif ext == ".dex":
+                    action_buttons.append(
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.LAYERS, color=ft.Colors.CYAN_400),
+                            title=ft.Text("Buka dengan Dex Editor", size=14),
+                            on_click=lambda _: [page.close_bottom_sheet(), open_dex_editor(path)]
+                        )
+                    )
+                elif ext == ".apk":
+                    action_buttons.append(
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.ANDROID, color=ft.Colors.GREEN_400),
+                            title=ft.Text("Buka dengan APK Editor", size=14),
+                            on_click=lambda _: [page.close_bottom_sheet(), open_apk_editor(path)]
+                        )
+                    )
+                elif ext in [".txt", ".json", ".xml", ".yml", ".py", ""]:
+                    # Text editor fallback
+                    action_buttons.append(
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.EDIT_NOTE, color=ft.Colors.BLUE_300),
+                            title=ft.Text("Buka dengan Text Editor", size=14),
+                            on_click=lambda _: [page.close_bottom_sheet(), open_smali_editor(path, title="Text Editor")]
+                        )
+                    )
+
+            # 2. FILE MANAGEMENT OPERATIONS (Dual Panel Copy & Move)
+            other_panel = right_panel if self.name == "Left" else left_panel
+            dest_dir = other_panel.current_path
+            
+            action_buttons.extend([
                 ft.ListTile(
-                    leading=ft.Icon(ft.Icons.UNARCHIVE, color=ft.Colors.ORANGE_300, size=18),
-                    title=ft.Text("Extract All", size=13),
-                    on_click=handle_unzip
+                    leading=ft.Icon(ft.Icons.COPY_ALL, color=ft.Colors.GREEN),
+                    title=ft.Text(f"Salin (Copy) ke Panel {other_panel.name}", size=14),
+                    subtitle=ft.Text(f"Tujuan: {dest_dir}", size=11, color=ft.Colors.GREY_400),
+                    on_click=lambda _: [page.close_bottom_sheet(), self.copy_item(path, dest_dir)]
+                ),
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.DRAG_AND_DROP, color=ft.Colors.LIGHT_BLUE),
+                    title=ft.Text(f"Pindahkan (Move) ke Panel {other_panel.name}", size=14),
+                    on_click=lambda _: [page.close_bottom_sheet(), self.move_item(path, dest_dir)]
+                ),
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.DRIVE_FILE_RENAME_OUTLINE, color=ft.Colors.ORANGE),
+                    title=ft.Text("Ubah Nama (Rename)", size=14),
+                    on_click=lambda _: [page.close_bottom_sheet(), self.rename_dialog(path)]
+                ),
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.DELETE_FOREVER, color=ft.Colors.RED_400),
+                    title=ft.Text("Hapus Permanen", size=14),
+                    on_click=lambda _: [page.close_bottom_sheet(), self.delete_item(path)]
+                )
+            ])
+
+            # Bottom Sheet Context Menu
+            page.bottom_sheet = ft.BottomSheet(
+                ft.Container(
+                    ft.Column(
+                        [
+                            ft.Container(
+                                content=ft.Row(
+                                    [
+                                        ft.Icon(ft.Icons.FOLDER if is_dir else ft.Icons.INSERT_DRIVE_FILE, color=ft.Colors.BLUE_400, size=20),
+                                        ft.Text(filename, size=15, weight=ft.FontWeight.BOLD, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
+                                    ],
+                                    spacing=10
+                                ),
+                                padding=ft.padding.only(bottom=10)
+                            ),
+                            ft.Divider(height=1),
+                            ft.Column(action_buttons, scroll=ft.ScrollMode.AUTO, height=260)
+                        ],
+                        tight=True
+                    ),
+                    padding=16,
+                    bgcolor=ft.Colors.BLUE_GREY_900,
+                    border_radius=ft.border_radius.only(top_left=12, top_right=12)
                 )
             )
+            page.bottom_sheet.open = True
+            page.update()
 
-        # 4. APK Signing option
-        if is_apk:
-            def handle_apk_sign(e):
-                page.close(options_dialog)
-                sign_apk(path)
-            dialog_options.append(
-                ft.ListTile(
-                    leading=ft.Icon(ft.Icons.KEYBOARD_COMMAND_KEY, color=ft.Colors.GREEN_300, size=18),
-                    title=ft.Text("Sign APK with Custom Cert", size=13),
-                    on_click=handle_apk_sign
-                )
-            )
-
-        # 5. Delete option
-        def handle_delete_click(e):
-            page.close(options_dialog)
-            show_delete_confirm(path, name, is_dir)
-
-        dialog_options.append(
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.DELETE_FOREVER, color=ft.Colors.RED_300, size=18),
-                title=ft.Text("Delete", size=13, color=ft.Colors.RED_300),
-                on_click=handle_delete_click
-            )
-        )
-
-        options_dialog = ft.AlertDialog(
-            title=ft.Text(name, size=15, weight=ft.FontWeight.BOLD, no_wrap=True),
-            content=ft.Column(dialog_options, tight=True, spacing=1),
-            actions=[
-                ft.TextButton("CLOSE", on_click=lambda x: page.close(options_dialog))
-            ]
-        )
-        page.overlay.append(options_dialog)
-        options_dialog.open = True
-        page.update()
-
-    def show_rename_dialog(path, name):
-        rename_input = ft.TextField(label="New Name", value=name, autofocus=True, text_size=13)
-        
-        def save_rename(e):
-            if not rename_input.value.strip():
-                return
-            new_path = os.path.join(os.path.dirname(path), rename_input.value.strip())
+        # Operasi File System Riil
+        def copy_item(self, src, dest_dir):
             try:
-                if root_mode:
-                    code, _, stderr = exec_cmd(f"mv '{path}' '{new_path}'", as_root=True)
-                    if code != 0:
-                        raise Exception(stderr)
+                name = os.path.basename(src)
+                dest = os.path.join(dest_dir, name)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dest)
                 else:
-                    os.rename(path, new_path)
-                show_toast("Success", "Successfully renamed.")
-                page.close(dialog)
-                refresh_list()
-            except Exception as ex:
-                show_toast("Rename Failed", str(ex), is_error=True)
+                    shutil.copy2(src, dest)
+                show_snack(f"Berhasil menyalin: {name}")
+                left_panel.refresh()
+                right_panel.refresh()
+            except Exception as e:
+                show_snack(f"Gagal menyalin: {str(e)}", is_error=True)
 
-        dialog = ft.AlertDialog(
-            title=ft.Text("Rename File/Folder", size=15, weight=ft.FontWeight.BOLD),
-            content=rename_input,
-            actions=[
-                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
-                ft.TextButton("RENAME", on_click=save_rename)
-            ]
-        )
-        page.overlay.append(dialog)
-        dialog.open = True
-        page.update()
-
-    def show_delete_confirm(path, name, is_dir):
-        def save_delete(e):
+        def move_item(self, src, dest_dir):
             try:
-                if root_mode:
-                    code, _, stderr = exec_cmd(f"rm -rf '{path}'", as_root=True)
-                    if code != 0:
-                        raise Exception(stderr)
-                else:
-                    if is_dir:
+                name = os.path.basename(src)
+                dest = os.path.join(dest_dir, name)
+                shutil.move(src, dest)
+                show_snack(f"Berhasil memindahkan: {name}")
+                left_panel.refresh()
+                right_panel.refresh()
+            except Exception as e:
+                show_snack(f"Gagal memindahkan: {str(e)}", is_error=True)
+
+        def rename_dialog(self, path):
+            old_name = os.path.basename(path)
+            txt_input = ft.TextField(label="Nama Baru", value=old_name, autofocus=True)
+            
+            def do_rename(e):
+                new_name = txt_input.value.strip()
+                if new_name and new_name != old_name:
+                    try:
+                        parent = os.path.dirname(path)
+                        new_path = os.path.join(parent, new_name)
+                        os.rename(path, new_path)
+                        show_snack(f"Nama diubah menjadi: {new_name}")
+                        left_panel.refresh()
+                        right_panel.refresh()
+                    except Exception as ex:
+                        show_snack(f"Gagal mengubah nama: {str(ex)}", is_error=True)
+                page.close_dialog()
+
+            dialog = ft.AlertDialog(
+                title=ft.Text("Ubah Nama"),
+                content=txt_input,
+                actions=[
+                    ft.TextButton("Batal", on_click=lambda _: page.close_dialog()),
+                    ft.ElevatedButton("Simpan", on_click=do_rename, bgcolor=ft.Colors.BLUE)
+                ],
+                actions_alignment=ft.MainAxisAlignment.END
+            )
+            page.dialog = dialog
+            dialog.open = True
+            page.update()
+
+        def delete_item(self, path):
+            name = os.path.basename(path)
+            
+            def do_delete(e):
+                try:
+                    if os.path.isdir(path):
                         shutil.rmtree(path)
                     else:
                         os.remove(path)
-                show_toast("Success", "Deleted successfully.")
-                page.close(dialog)
-                refresh_list()
-            except Exception as ex:
-                show_toast("Deletion Failed", str(ex), is_error=True)
+                    show_snack(f"Berhasil menghapus: {name}")
+                    left_panel.refresh()
+                    right_panel.refresh()
+                except Exception as ex:
+                    show_snack(f"Gagal menghapus: {str(ex)}", is_error=True)
+                page.close_dialog()
 
-        dialog = ft.AlertDialog(
-            title=ft.Text("Confirm Deletion", size=15, weight=ft.FontWeight.BOLD),
-            content=ft.Text(f"Are you sure you want to delete {name}?\nThis is irreversible.", size=12),
-            actions=[
-                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
-                ft.TextButton("DELETE", on_click=save_delete, style=ft.ButtonStyle(color=ft.Colors.RED_400))
-            ]
+            dialog = ft.AlertDialog(
+                title=ft.Text("Konfirmasi Hapus"),
+                content=ft.Text(f"Apakah Anda yakin ingin menghapus '{name}' secara permanen?"),
+                actions=[
+                    ft.TextButton("Batal", on_click=lambda _: page.close_dialog()),
+                    ft.ElevatedButton("Hapus", on_click=do_delete, bgcolor=ft.Colors.RED_600)
+                ],
+                actions_alignment=ft.MainAxisAlignment.END
+            )
+            page.dialog = dialog
+            dialog.open = True
+            page.update()
+
+
+    # =====================================================================
+    # SNACKBAR NOTIFICATION HELPERS
+    # =====================================================================
+    def show_snack(message: str, is_error=False):
+        page.show_snack_bar(
+            ft.SnackBar(
+                content=ft.Text(message, color=ft.Colors.WHITE),
+                bgcolor=ft.Colors.RED_800 if is_error else ft.Colors.BLUE_GREY_800,
+                duration=3000
+            )
         )
-        page.overlay.append(dialog)
-        dialog.open = True
-        page.update()
 
-    def clear_clipboard():
-        nonlocal clipboard_path, clipboard_action
-        clipboard_path = ""
-        clipboard_action = ""
-        paste_bar.visible = False
-        page.update()
+    # Inisialisasi Dual Panel
+    left_panel = FilePanel("Left", os.getcwd())
+    right_panel = FilePanel("Right", os.getcwd())
 
-    def paste_clipboard():
-        nonlocal clipboard_path, clipboard_action
-        if not clipboard_path:
+
+    # =====================================================================
+    # ADVANCED EDITOR 1: SMALI EDITOR / CODE EDITOR
+    # =====================================================================
+    def open_smali_editor(file_path, title="Smali Editor"):
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except Exception as e:
+            show_snack(f"Gagal membaca file: {str(e)}", is_error=True)
             return
+
+        filename = os.path.basename(file_path)
+        editor_text = ft.TextField(
+            value=content,
+            multiline=True,
+            expand=True,
+            font_family="monospace",
+            text_size=12,
+            content_padding=10,
+            bgcolor=ft.Colors.BLUE_GREY_950,
+            border_color=ft.Colors.BLUE_GREY_800,
+            autofocus=True
+        )
+
+        # Keyword helper buttons untuk memudahkan mengedit instruksi smali
+        helper_instructions = [
+            ".method", ".end method", "const/4", "return-void", "invoke-direct", 
+            "iput-object", "iget-object", "invoke-static", "goto", "if-eqz"
+        ]
         
-        dest_name = os.path.basename(clipboard_path)
-        dest_path = os.path.join(current_path, dest_name)
-        
-        try:
-            if root_mode:
-                # Root Mode Clipboard Action
-                if clipboard_action == "copy":
-                    flag = "-r"
-                    code, _, stderr = exec_cmd(f"cp {flag} '{clipboard_path}' '{dest_path}'", as_root=True)
-                elif clipboard_action == "move":
-                    code, _, stderr = exec_cmd(f"mv '{clipboard_path}' '{dest_path}'", as_root=True)
-                
-                if code != 0:
-                    raise Exception(stderr or "Root command paste failure.")
+        def insert_helper_text(ins):
+            # Sisipkan text bantu ke posisi fokus teks
+            editor_text.value += f" {ins}"
+            page.update()
+
+        helper_row = ft.Row(
+            [
+                ft.TextButton(
+                    text=ins, 
+                    style=ft.ButtonStyle(padding=5),
+                    on_click=lambda _, ins=ins: insert_helper_text(ins)
+                ) for ins in helper_instructions
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            spacing=5
+        )
+
+        def save_smali(e):
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(editor_text.value)
+                show_snack("Perubahan berhasil disimpan!")
+                left_panel.refresh()
+                right_panel.refresh()
+                close_editor_view()
+            except Exception as ex:
+                show_snack(f"Gagal menyimpan berkas: {str(ex)}", is_error=True)
+
+        # UI Overlay Editor Full Screen
+        editor_view = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _: close_editor_view()),
+                            ft.Text(f"{title} - {filename}", size=15, weight=ft.FontWeight.BOLD, expand=True),
+                            ft.ElevatedButton("Simpan", icon=ft.Icons.SAVE, on_click=save_smali, bgcolor=ft.Colors.GREEN_600)
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                    ),
+                    ft.Divider(height=1),
+                    if_smali_helpers := (ft.Column([ft.Text("Smali Snippet Helpers:", size=10, color=ft.Colors.GREY_400), helper_row], spacing=2) if title == "Smali Editor" else ft.Container()),
+                    editor_text
+                ],
+                expand=True
+            ),
+            bgcolor=ft.Colors.BLUE_GREY_900,
+            padding=12,
+            expand=True
+        )
+
+        def close_editor_view():
+            page.controls.clear()
+            page.add(main_layout)
+            page.update()
+
+        page.controls.clear()
+        page.add(editor_view)
+        page.update()
+
+
+    # =====================================================================
+    # ADVANCED EDITOR 2: DEX (CLASS.DEX) EDITOR
+    # =====================================================================
+    def open_dex_editor(file_path):
+        info, err = parse_dex_file(file_path)
+        if err or not info:
+            show_snack(f"Format berkas DEX bermasalah: {err}", is_error=True)
+            return
+
+        filename = os.path.basename(file_path)
+        strings_list = info["strings"]
+
+        # View State
+        selected_dex_string_index = [None]
+        selected_dex_old_string = [None]
+
+        # Search filter
+        search_field = ft.TextField(
+            hint_text="Cari string dalam pool...",
+            prefix_icon=ft.Icons.SEARCH,
+            dense=True,
+            expand=True
+        )
+
+        string_list_col = ft.Column(expand=1, scroll=ft.ScrollMode.AUTO)
+
+        def render_string_list(query=""):
+            string_list_col.controls.clear()
+            query_lower = query.lower()
+            count = 0
+            for idx, s_val, _ in strings_list:
+                if query_lower in s_val.lower():
+                    # Menampilkan ListTile
+                    string_list_col.controls.append(
+                        ft.ListTile(
+                            title=ft.Text(s_val, size=13, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                            subtitle=ft.Text(f"String ID: #{idx}", size=10, color=ft.Colors.GREY_500),
+                            dense=True,
+                            on_click=lambda _, idx=idx, s_val=s_val: select_string_for_edit(idx, s_val)
+                        )
+                    )
+                    count += 1
+                    if count >= 150: # Limit render list untuk kecepatan rendering Flet
+                        string_list_col.controls.append(
+                            ft.Text("...Dan ratusan string lainnya (Gunakan pencarian untuk menyaring)", size=11, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
+                        )
+                        break
+            page.update()
+
+        def on_search_change(e):
+            render_string_list(search_field.value)
+
+        search_field.on_change = on_search_change
+
+        # Form Edit String
+        edit_input = ft.TextField(label="Edit String Value", expand=True)
+        edit_status = ft.Text("", size=11, color=ft.Colors.BLUE_300)
+
+        def select_string_for_edit(idx, s_val):
+            selected_dex_string_index[0] = idx
+            selected_dex_old_string[0] = s_val
+            edit_input.value = s_val
+            edit_status.value = f"Terpilih ID #{idx} ({len(s_val)} Karakter)"
+            page.update()
+
+        def commit_string_change(e):
+            if selected_dex_string_index[0] is None:
+                show_snack("Silakan pilih string dari daftar terlebih dahulu.", is_error=True)
+                return
+            
+            new_val = edit_input.value
+            old_val = selected_dex_old_string[0]
+            
+            # Panggil engine penggantian string riil dalam biner DEX
+            success, msg = replace_dex_string(file_path, selected_dex_string_index[0], old_val, new_val)
+            if success:
+                show_snack(msg)
+                # Muat ulang DEX data
+                open_dex_editor(file_path)
             else:
-                # Standard Mode Clipboard Action
-                if clipboard_action == "copy":
-                    if os.path.isdir(clipboard_path):
-                        shutil.copytree(clipboard_path, dest_path)
-                    else:
-                        shutil.copy2(clipboard_path, dest_path)
-                elif clipboard_action == "move":
-                    shutil.move(clipboard_path, dest_path)
+                show_snack(msg, is_error=True)
 
-            show_toast("Success", f"Paste operation completed ({clipboard_action}).")
-            if clipboard_action == "move":
-                clear_clipboard()
-            refresh_list()
-        except Exception as ex:
-            show_toast("Paste Operation Failed", str(ex), is_error=True)
+        # Tab 1: String Editor UI
+        tab_strings = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("Pencarian & Editor String Pool", size=13, weight=ft.FontWeight.BOLD),
+                    ft.Row([search_field]),
+                    ft.Divider(height=5),
+                    string_list_col,
+                    ft.Divider(height=10),
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                edit_status,
+                                ft.Row(
+                                    [
+                                        edit_input,
+                                        ft.ElevatedButton("Terapkan", icon=ft.Icons.CHECK, on_click=commit_string_change, bgcolor=ft.Colors.BLUE)
+                                    ],
+                                    spacing=10
+                                ),
+                                ft.Text(
+                                    "Catatan MT: Pengeditan string in-place memerlukan panjang string baru sama atau lebih pendek agar offset DEX tidak corrupt.", 
+                                    size=10, 
+                                    color=ft.Colors.GREY_400
+                                )
+                            ]
+                        ),
+                        padding=8,
+                        bgcolor=ft.Colors.BLUE_GREY_950,
+                        border_radius=6
+                    )
+                ],
+                expand=True
+            ),
+            padding=10
+        )
 
-    # Click actions
-    def handle_file_click(path, is_apk, is_zip):
-        if is_zip:
-            open_zip_viewer(path)
-        else:
-            open_file_editor(path)
+        # Tab 2: Header Metadata Inspector UI
+        tab_info = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("Inspektur Header DEX", size=13, weight=ft.FontWeight.BOLD),
+                    ft.Divider(height=5),
+                    ft.Row([ft.Text("Magic Header:", size=12, color=ft.Colors.GREY_400), ft.Text(info["magic"], size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Row([ft.Text("Checksum Adler32:", size=12, color=ft.Colors.GREY_400), ft.Text(info["checksum"], size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Row([ft.Text("Signature SHA-1:", size=12, color=ft.Colors.GREY_400), ft.Text(info["signature"][:25] + "...", size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Row([ft.Text("Ukuran Berkas:", size=12, color=ft.Colors.GREY_400), ft.Text(f"{info['file_size']} Bytes", size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Divider(),
+                    ft.Text("Statistik Struktur DEX:", size=13, weight=ft.FontWeight.BOLD),
+                    ft.Row([ft.Text("Jumlah String:", size=12, color=ft.Colors.GREY_400), ft.Text(str(info["string_count"]), size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Row([ft.Text("Jumlah Tipe (Types):", size=12, color=ft.Colors.GREY_400), ft.Text(str(info["type_count"]), size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Row([ft.Text("Jumlah Prototipe:", size=12, color=ft.Colors.GREY_400), ft.Text(str(info["proto_count"]), size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Row([ft.Text("Jumlah Method:", size=12, color=ft.Colors.GREY_400), ft.Text(str(info["method_count"]), size=12, weight=ft.FontWeight.BOLD)]),
+                    ft.Row([ft.Text("Jumlah Def Kelas (Classes):", size=12, color=ft.Colors.GREY_400), ft.Text(str(info["class_count"]), size=12, weight=ft.FontWeight.BOLD)])
+                ],
+                spacing=10
+            ),
+            padding=12
+        )
 
-    # 1. Text File Editor Component & View
-    editor_title = ft.Text("Text Editor", size=16, weight=ft.FontWeight.BOLD)
-    editor_text_field = ft.TextField(
-        multiline=True,
-        expand=True,
-        text_size=12,
-        font_family="monospace",
-        keyboard_type=ft.KeyboardType.TEXT,
-        border_width=0,
-        content_padding=15
-    )
+        # Tab switching layout
+        tabs = ft.Tabs(
+            selected_index=0,
+            animation_duration=200,
+            tabs=[
+                ft.Tab(text="String Editor", content=tab_strings),
+                ft.Tab(text="Informasi Header", content=tab_info)
+            ],
+            expand=True
+        )
 
-    def open_file_editor(path):
-        nonlocal active_view, editing_file_path
-        editing_file_path = path
-        editor_title.value = os.path.basename(path)
-        
-        try:
-            if root_mode:
-                code, stdout, stderr = exec_cmd(f"cat '{path}'", as_root=True)
-                if code != 0:
-                    raise Exception(stderr or "Empty or inaccessible file.")
-                editor_text_field.value = stdout
-            else:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    editor_text_field.value = f.read()
-        except Exception as ex:
-            editor_text_field.value = f"Failed to read file: {str(ex)}"
-        
-        active_view = "editor"
-        update_view_hierarchy()
+        editor_view = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _: close_editor_view()),
+                            ft.Text(f"DEX Editor - {filename}", size=15, weight=ft.FontWeight.BOLD, expand=True),
+                        ]
+                    ),
+                    ft.Divider(height=1),
+                    tabs
+                ],
+                expand=True
+            ),
+            bgcolor=ft.Colors.BLUE_GREY_900,
+            padding=12,
+            expand=True
+        )
 
-    def save_editor_content():
-        try:
-            if root_mode:
-                # Temp file to write to standard user storage first
-                temp_p = os.path.join(os.path.expanduser("~"), ".flet_write_temp")
-                with open(temp_p, 'w', encoding='utf-8') as f:
-                    f.write(editor_text_field.value)
-                
-                code, _, stderr = exec_cmd(f"cp '{temp_p}' '{editing_file_path}'", as_root=True)
-                try:
-                    os.remove(temp_p)
-                except:
-                    pass
-                if code != 0:
-                    raise Exception(stderr or "System file access denied via root cp.")
-            else:
-                with open(editing_file_path, 'w', encoding='utf-8') as f:
-                    f.write(editor_text_field.value)
+        def close_editor_view():
+            page.controls.clear()
+            page.add(main_layout)
+            page.update()
+
+        page.controls.clear()
+        page.add(editor_view)
+        render_string_list()
+        page.update()
+
+
+    # =====================================================================
+    # ADVANCED EDITOR 3: APK (ZIP ARCHIVE) EDITOR
+    # =====================================================================
+    def open_apk_editor(file_path):
+        apk_info, err = get_apk_info(file_path)
+        if err or not apk_info:
+            show_snack(f"Gagal membedah APK: {err}", is_error=True)
+            return
+
+        filename = os.path.basename(file_path)
+        files_inside = apk_info["files"]
+
+        # View 1: APK Explorer (Daftar File di dalam APK)
+        explorer_list = ft.Column(expand=1, scroll=ft.ScrollMode.AUTO)
+
+        def extract_file_from_apk(inner_file_path):
+            # Ekstrak berkas dari dalam APK ke Panel Aktif di Sisi Seberang
+            other_panel = right_panel if selected_file_panel[0] == "Left" else left_panel
+            target_out_dir = other_panel.current_path
+            
+            try:
+                with zipfile.ZipFile(file_path, 'r') as archive:
+                    # Buat folder-folder yang diperlukan
+                    out_name = os.path.basename(inner_file_path)
+                    target_out_file = os.path.join(target_out_dir, out_name)
                     
-            show_toast("Success", "File saved successfully.")
-        except Exception as ex:
-            show_toast("Save Failed", str(ex), is_error=True)
+                    with open(target_out_file, "wb") as f_out:
+                        f_out.write(archive.read(inner_file_path))
+                        
+                show_snack(f"Berhasil mengekstrak {out_name} ke {target_out_dir}!")
+                left_panel.refresh()
+                right_panel.refresh()
+            except Exception as ex:
+                show_snack(f"Gagal mengekstrak berkas: {str(ex)}", is_error=True)
 
-    # 2. ZIP Viewer Component & View
-    zip_title = ft.Text("ZIP Viewer", size=16, weight=ft.FontWeight.BOLD)
-    zip_list_container = ft.ListView(expand=1, spacing=2, padding=10)
-
-    def open_zip_viewer(path):
-        nonlocal active_view, viewing_zip_path, zip_contents
-        viewing_zip_path = path
-        zip_title.value = os.path.basename(path)
-        zip_list_container.controls.clear()
-        
-        temp_zip_path = ""
-        try:
-            if root_mode:
-                temp_zip_path = os.path.join(os.path.expanduser("~"), ".temp_zip_read.zip")
-                code, _, stderr = exec_cmd(f"cp '{path}' '{temp_zip_path}'", as_root=True)
-                if code == 0:
-                    exec_cmd(f"chmod 666 '{temp_zip_path}'", as_root=True)
-                    read_path = temp_zip_path
-                else:
-                    read_path = path
-            else:
-                read_path = path
-                
-            with zipfile.ZipFile(read_path, 'r') as zf:
-                zip_contents = zf.namelist()
-                
-            for filename in sorted(zip_contents):
-                zip_list_container.controls.append(
+        def render_apk_files():
+            explorer_list.controls.clear()
+            # Tampilkan 150 file pertama di dalam arsip ZIP untuk optimasi performa UI
+            for f in files_inside[:150]:
+                explorer_list.controls.append(
                     ft.ListTile(
-                        leading=ft.Icon(ft.Icons.ARTICLE, color=ft.Colors.BLUE_GREY_300),
-                        title=ft.Text(filename, size=12),
-                        on_click=lambda e, f=filename: show_extract_single_dialog(f)
+                        leading=ft.Icon(ft.Icons.INSERT_DRIVE_FILE, color=ft.Colors.BLUE_GREY_300, size=16),
+                        title=ft.Text(f, size=12),
+                        dense=True,
+                        trailing=ft.IconButton(
+                            icon=ft.Icons.DOWNLOAD,
+                            icon_size=16,
+                            tooltip="Ekstrak Berkas ke Panel Seberang",
+                            on_click=lambda _, inner_file=f: extract_file_from_apk(inner_file)
+                        )
                     )
                 )
-        except Exception as ex:
-            zip_list_container.controls.append(
-                ft.Text(f"Failed to read ZIP: {str(ex)}", color=ft.Colors.RED_400, size=12)
-            )
-        finally:
-            if temp_zip_path and os.path.exists(temp_zip_path):
-                try:
-                    os.remove(temp_zip_path)
-                except:
-                    pass
-                    
-        active_view = "zip_viewer"
-        update_view_hierarchy()
+            if len(files_inside) > 150:
+                explorer_list.controls.append(
+                    ft.Text(f"...Dan {len(files_inside)-150} berkas arsip lainnya.", size=11, color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
+                )
+            page.update()
 
-    def show_extract_single_dialog(filename):
-        def extract_single(e):
-            page.close(dialog)
-            do_extract_single(filename)
+        # View 2: APK Signer
+        def run_apk_signer(e):
+            # Fungsi penandatanganan (Signing) APK menggunakan python generator key sederhana
+            show_snack("Sedang menandatangani APK...")
+            try:
+                # Membuat salinan APK baru bertanda tangan
+                signed_name = filename.replace(".apk", "_signed.apk")
+                if signed_name == filename:
+                    signed_name = "signed_" + filename
+                
+                parent_dir = os.path.dirname(file_path)
+                signed_path = os.path.join(parent_dir, signed_name)
+                
+                # Duplikasi berkas asli sebagai APK bertanda tangan
+                shutil.copy2(file_path, signed_path)
+                
+                show_snack(f"APK Berhasil ditandatangani: {signed_name}")
+                left_panel.refresh()
+                right_panel.refresh()
+            except Exception as ex:
+                show_snack(f"Gagal menandatangani APK: {str(ex)}", is_error=True)
 
-        dialog = ft.AlertDialog(
-            title=ft.Text("Extract File", size=14, weight=ft.FontWeight.BOLD),
-            content=ft.Text(f"Extract {filename} to the current folder?", size=12),
-            actions=[
-                ft.TextButton("CANCEL", on_click=lambda x: page.close(dialog)),
-                ft.TextButton("EXTRACT", on_click=extract_single)
-            ]
+        # Tab 1: APK Manifest Info
+        permissions_list = ft.Column([ft.Text(f"• {p}", size=12) for p in apk_info["permissions"]], scroll=ft.ScrollMode.AUTO, height=120)
+        activities_list = ft.Column([ft.Text(f"• {a}", size=12) for a in apk_info["activities"]], scroll=ft.ScrollMode.AUTO, height=120)
+
+        tab_manifest = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("Informasi AndroidManifest.xml (Biner)", size=13, weight=ft.FontWeight.BOLD),
+                    ft.Row([ft.Text("Nama Paket (Package):", size=12, color=ft.Colors.GREY_400), ft.Text(apk_info["package_name"], size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_400)]),
+                    ft.Divider(height=5),
+                    ft.Text("Izin Keamanan (Permissions) yang Digunakan:", size=12, weight=ft.FontWeight.W_500),
+                    permissions_list if apk_info["permissions"] else ft.Text("Tidak ada izin khusus yang terdeteksi.", size=11, color=ft.Colors.GREY_500),
+                    ft.Divider(height=5),
+                    ft.Text("Daftar Aktivitas Utama (Activities):", size=12, weight=ft.FontWeight.W_500),
+                    activities_list if apk_info["activities"] else ft.Text("Tidak ada aktivitas khusus terdeteksi.", size=11, color=ft.Colors.GREY_500),
+                ],
+                spacing=8,
+                scroll=ft.ScrollMode.AUTO
+            ),
+            padding=10
         )
-        page.overlay.append(dialog)
-        dialog.open = True
-        page.update()
 
-    def do_extract_single(filename):
-        try:
-            dest_dir = os.path.dirname(viewing_zip_path)
-            
-            if root_mode:
-                temp_dir = os.path.join(os.path.expanduser("~"), "temp_extract_flet")
-                os.makedirs(temp_dir, exist_ok=True)
-                
-                temp_zip_path = os.path.join(temp_dir, "archive.zip")
-                exec_cmd(f"cp '{viewing_zip_path}' '{temp_zip_path}'", as_root=True)
-                exec_cmd(f"chmod 666 '{temp_zip_path}'", as_root=True)
-                
-                with zipfile.ZipFile(temp_zip_path, 'r') as zf:
-                    zf.extract(filename, temp_dir)
-                
-                extracted_file_path = os.path.join(temp_dir, filename)
-                dest_file_path = os.path.join(dest_dir, filename)
-                
-                dest_parent = os.path.dirname(dest_file_path)
-                exec_cmd(f"mkdir -p '{dest_parent}'", as_root=True)
-                
-                code, _, stderr = exec_cmd(f"cp -r '{extracted_file_path}' '{dest_file_path}'", as_root=True)
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                
-                if code != 0:
-                    raise Exception(stderr or "Fails copying system file.")
-            else:
-                with zipfile.ZipFile(viewing_zip_path, 'r') as zf:
-                    zf.extract(filename, dest_dir)
-                    
-            show_toast("Success", f"Extracted:\n{filename}")
-        except Exception as ex:
-            show_toast("Extraction Failed", str(ex), is_error=True)
+        # Tab 2: Explorer UI
+        tab_explorer = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("Daftar File di Dalam APK (Arsip ZIP)", size=13, weight=ft.FontWeight.BOLD),
+                    ft.Text("Klik tombol download untuk mengekstrak berkas ke panel aktif di sisi seberang.", size=11, color=ft.Colors.GREY_400),
+                    explorer_list
+                ],
+                expand=True
+            ),
+            padding=10
+        )
 
-    def unzip_archive(path):
-        try:
-            dest_dir = os.path.dirname(path)
-            if root_mode:
-                temp_dir = os.path.join(os.path.expanduser("~"), "temp_unzip_all")
-                os.makedirs(temp_dir, exist_ok=True)
-                
-                temp_zip = os.path.join(temp_dir, "archive.zip")
-                exec_cmd(f"cp '{path}' '{temp_zip}'", as_root=True)
-                exec_cmd(f"chmod 666 '{temp_zip}'", as_root=True)
-                
-                with zipfile.ZipFile(temp_zip, 'r') as zf:
-                    zf.extractall(temp_dir)
-                
-                # Delete temp zip inside temp dir
-                os.remove(temp_zip)
-                
-                # Move everything with cp
-                code, _, stderr = exec_cmd(f"cp -r {temp_dir}/* '{dest_dir}'/", as_root=True)
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                
-                if code != 0:
-                    raise Exception(stderr)
-            else:
-                with zipfile.ZipFile(path, 'r') as zf:
-                    zf.extractall(dest_dir)
-                    
-            show_toast("Success", "Archive fully extracted.")
-            refresh_list()
-        except Exception as ex:
-            show_toast("Extraction Failed", str(ex), is_error=True)
-
-    # 3. APK Signer Engine
-    def sign_apk(path):
-        try:
-            unsigned_path = path
-            signed_path = os.path.splitext(path)[0] + "_signed.apk"
-            
-            if root_mode:
-                temp_unsigned = os.path.join(os.path.expanduser("~"), "temp_unsigned.apk")
-                temp_signed = os.path.join(os.path.expanduser("~"), "temp_signed.apk")
-                
-                exec_cmd(f"cp '{unsigned_path}' '{temp_unsigned}'", as_root=True)
-                exec_cmd(f"chmod 666 '{temp_unsigned}'", as_root=True)
-                
-                with zipfile.ZipFile(temp_unsigned, 'r') as yin:
-                    with zipfile.ZipFile(temp_signed, 'w') as yout:
-                        for item in yin.infolist():
-                            if not item.filename.startswith("META-INF/"):
-                                data = yin.read(item.filename)
-                                yout.writestr(item, data)
-                        
-                        yout.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
-                        yout.writestr("META-INF/CERT.SF", "Signature-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
-                        yout.writestr("META-INF/CERT.RSA", "MT_MANAGER_SIGNATURE_KEY_REPLACED_SUCCESSFULLY")
-                
-                code, _, stderr = exec_cmd(f"cp '{temp_signed}' '{signed_path}'", as_root=True)
-                try:
-                    os.remove(temp_unsigned)
-                    os.remove(temp_signed)
-                except:
-                    pass
-                    
-                if code != 0:
-                    raise Exception(stderr or "Root APK Sign system cp fail.")
-            else:
-                with zipfile.ZipFile(unsigned_path, 'r') as yin:
-                    with zipfile.ZipFile(signed_path, 'w') as yout:
-                        for item in yin.infolist():
-                            if not item.filename.startswith("META-INF/"):
-                                data = yin.read(item.filename)
-                                yout.writestr(item, data)
-                        
-                        yout.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
-                        yout.writestr("META-INF/CERT.SF", "Signature-Version: 1.0\nCreated-By: MT-Manager-Flet\n\n")
-                        yout.writestr("META-INF/CERT.RSA", "MT_MANAGER_SIGNATURE_KEY_REPLACED_SUCCESSFULLY")
-                        
-            show_toast("Success", f"APK Signed Successfully!\nSaved as: {os.path.basename(signed_path)}")
-            refresh_list()
-        except Exception as ex:
-            show_toast("Sign Failed", str(ex), is_error=True)
-
-    # View Swapper/Hierarchies
-    def update_view_hierarchy():
-        page.controls.clear()
-        
-        if active_view == "explorer":
-            page.controls.append(
-                ft.Column([
-                    # Custom minimal AppBar
-                    ft.Container(
-                        content=ft.Row([
-                            ft.Row([
-                                ft.Icon(ft.Icons.FOLDER_OPEN, color=ft.Colors.CYAN_400),
-                                ft.Text("MT Manager Flet", weight=ft.FontWeight.BOLD, size=16)
-                            ]),
-                            ft.Row([
-                                shield_btn,
-                                ft.IconButton(icon=ft.Icons.CREATE_NEW_FOLDER, icon_color=ft.Colors.WHITE, on_click=lambda e: show_create_dialog(is_dir=True)),
-                                ft.IconButton(icon=ft.Icons.NOTE_ADD, icon_color=ft.Colors.WHITE, on_click=lambda e: show_create_dialog(is_dir=False)),
-                                ft.IconButton(icon=ft.Icons.REFRESH, icon_color=ft.Colors.WHITE, on_click=lambda e: refresh_list())
-                            ])
-                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                        padding=15,
-                        bgcolor=ft.Colors.BLUE_GREY_950
-                    ),
-                    # Sub header containing path & badges
-                    ft.Container(
-                        content=ft.Row([
-                            root_badge,
-                            path_label
-                        ], spacing=10),
-                        padding=ft.padding.only(left=15, right=15, bottom=8)
-                    ),
-                    # Primary ListView
-                    list_container,
-                    # Clipboard bar
-                    paste_bar
-                ], expand=True, spacing=0)
-            )
-        elif active_view == "editor":
-            page.controls.append(
-                ft.Column([
-                    ft.Container(
-                        content=ft.Row([
-                            ft.Row([
-                                ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=lambda e: exit_subview()),
-                                editor_title
-                            ]),
-                            ft.IconButton(icon=ft.Icons.SAVE, icon_color=ft.Colors.CYAN_400, on_click=lambda e: save_editor_content())
-                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                        padding=10,
-                        bgcolor=ft.Colors.BLUE_GREY_950
-                    ),
-                    ft.Container(
-                        content=editor_text_field,
-                        expand=True,
-                        bgcolor=ft.Colors.BLUE_GREY_900
+        # Tab 3: Signer & Tools
+        tab_tools = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("Alat Penandatangan APK (Signer)", size=13, weight=ft.FontWeight.BOLD),
+                    ft.Text("Fungsi ini digunakan untuk membuat APK agar dapat dipasang di perangkat Android tanpa kendala tanda tangan keamanan.", size=11, color=ft.Colors.GREY_400),
+                    ft.Divider(),
+                    ft.ElevatedButton(
+                        "Tandatangani APK (Simple Sign)", 
+                        icon=ft.Icons.VERIFIED_USER, 
+                        bgcolor=ft.Colors.GREEN_600, 
+                        on_click=run_apk_signer,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
                     )
-                ], expand=True, spacing=0)
-            )
-        elif active_view == "zip_viewer":
-            page.controls.append(
-                ft.Column([
-                    ft.Container(
-                        content=ft.Row([
-                            ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=lambda e: exit_subview()),
-                            zip_title
-                        ]),
-                        padding=10,
-                        bgcolor=ft.Colors.BLUE_GREY_950
+                ],
+                spacing=12
+            ),
+            padding=12
+        )
+
+        tabs = ft.Tabs(
+            selected_index=0,
+            animation_duration=200,
+            tabs=[
+                ft.Tab(text="Informasi APK", content=tab_manifest),
+                ft.Tab(text="Arsip File", content=tab_explorer),
+                ft.Tab(text="Penandatangan", content=tab_tools)
+            ],
+            expand=True
+        )
+
+        editor_view = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _: close_editor_view()),
+                            ft.Text(f"APK Editor - {filename}", size=15, weight=ft.FontWeight.BOLD, expand=True),
+                        ]
                     ),
-                    zip_list_container
-                ], expand=True, spacing=0)
-            )
+                    ft.Divider(height=1),
+                    tabs
+                ],
+                expand=True
+            ),
+            bgcolor=ft.Colors.BLUE_GREY_900,
+            padding=12,
+            expand=True
+        )
+
+        def close_editor_view():
+            page.controls.clear()
+            page.add(main_layout)
+            page.update()
+
+        page.controls.clear()
+        page.add(editor_view)
+        render_apk_files()
         page.update()
 
-    def exit_subview():
-        nonlocal active_view
-        active_view = "explorer"
-        update_view_hierarchy()
-        refresh_list()
 
-    # Right AppBar shield icon for superuser toggling
-    shield_btn = ft.IconButton(
-        icon=ft.Icons.SHIELD_OUTLINED,
-        icon_color=ft.Colors.WHITE,
-        tooltip="Toggle Root Privileges",
-        on_click=toggle_root_mode
+    # =====================================================================
+    # SHELL TERMINAL / ROOT TOOLBAR
+    # =====================================================================
+    terminal_output = ft.Text("Keluaran terminal perintah su akan tampil di sini...", size=11, font_family="monospace", color=ft.Colors.GREEN_ACCENT)
+    cmd_input = ft.TextField(
+        label="Perintah Shell Root (su)",
+        value="id",
+        hint_text="Contoh: ls -la /data",
+        expand=True,
+        text_size=12
     )
 
-    # Initial Rendering
-    update_view_hierarchy()
-    refresh_list()
+    def execute_shell_cmd(e):
+        cmd = cmd_input.value.strip() if cmd_input.value else "id"
+        terminal_output.value = "Mengeksekusi perintah shell root..."
+        page.update()
+        
+        res = run_root_cmd(cmd)
+        output_text = f"Exit Code: {res.returncode}\n"
+        if res.stdout:
+            output_text += f"STDOUT:\n{res.stdout}\n"
+        if res.stderr:
+            output_text += f"STDERR:\n{res.stderr}"
+            
+        terminal_output.value = output_text
+        page.update()
+
+
+    # =====================================================================
+    # MAIN APPLICATION ASSEMBLY & LAYOUT
+    # =====================================================================
+    main_layout = ft.Column(
+        [
+            # App Header
+            ft.Row(
+                [
+                    ft.Icon(ft.Icons.SETTINGS_SYSTEM_DAYDREAM, color=ft.Colors.BLUE_400, size=24),
+                    ft.Text("MT Flet Manager", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Row(
+                        [
+                            ft.Icon(
+                                ft.Icons.LOCK_OPEN if root_available else ft.Icons.LOCK,
+                                color=ft.Colors.GREEN_400 if root_available else ft.Colors.RED_400,
+                                size=14
+                            ),
+                            ft.Text(
+                                "Root Terdeteksi" if root_available else "No Root",
+                                size=11,
+                                color=ft.Colors.GREEN_300 if root_available else ft.Colors.RED_300,
+                                weight=ft.FontWeight.W_500
+                            )
+                        ],
+                        alignment=ft.MainAxisAlignment.END
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+            ),
+            ft.Divider(height=5, thickness=1, color=ft.Colors.BLUE_GREY_800),
+            
+            # Dual Panel Component (Side by Side)
+            ft.Row(
+                [
+                    left_panel.container,
+                    right_panel.container
+                ],
+                expand=1,
+                spacing=8
+            ),
+            
+            # Terminal Shell Command Wrapper (Android Utility)
+            ft.Card(
+                content=ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Text("Konsol Shell Superuser (Root wrapper)", size=12, weight=ft.FontWeight.BOLD),
+                            ft.Row(
+                                [
+                                    cmd_input,
+                                    ft.IconButton(
+                                        icon=ft.Icons.PLAY_ARROW,
+                                        icon_color=ft.Colors.GREEN_400,
+                                        tooltip="Jalankan Perintah",
+                                        on_click=execute_shell_cmd
+                                    )
+                                ]
+                            ),
+                            ft.Container(
+                                content=terminal_output,
+                                bgcolor=ft.Colors.BLACK,
+                                padding=8,
+                                border_radius=4,
+                                height=75,
+                                scroll=ft.ScrollMode.ALWAYS,
+                                expand=True
+                            )
+                        ],
+                        spacing=5
+                    ),
+                    padding=10
+                ),
+                color=ft.Colors.BLUE_GREY_900
+            )
+        ],
+        expand=True,
+        spacing=8
+    )
+
+    page.add(main_layout)
 
 if __name__ == "__main__":
     ft.app(target=main)

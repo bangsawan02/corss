@@ -59,7 +59,7 @@ jobs:
 
     - name: Build Android Release APK
       run: |
-        flet build apk
+        flet build apk --split-per-abi
 
     # Save pip cache (runs always even on failure)
     - name: Save Pip Cache
