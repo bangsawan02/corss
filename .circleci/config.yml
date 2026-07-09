@@ -1,31 +1,111 @@
-# Use the latest 2.1 version of CircleCI pipeline process engine.
-# See: https://circleci.com/docs/reference/configuration-reference
 version: 2.1
 
-# Define a job to be invoked later in a workflow.
-# See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#jobs-overview & https://circleci.com/docs/reference/configuration-reference/#jobs
 jobs:
-  say-hello:
-    # Specify the execution environment. You can specify an image from Docker Hub or use one of our convenience images from CircleCI's Developer Hub.
-    # See: https://circleci.com/docs/guides/execution-managed/executor-intro/ & https://circleci.com/docs/reference/configuration-reference/#executor-job
+  build-kernel:
     docker:
-      # Specify the version you desire here
-      # See: https://circleci.com/developer/images/image/cimg/base
-      - image: cimg/base:current
+      - image: ubuntu:22.04
+    # OPTIMASI 1: Menggunakan 4 Core CPU & 16GB RAM (Lebih kuat dari GitHub Actions)
+    resource_class: large 
+    environment:
+      DEBIAN_FRONTEND: noninteractive
 
-    # Add steps to the job
-    # See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#steps-overview & https://circleci.com/docs/reference/configuration-reference/#steps
     steps:
-      # Checkout the code as the first step.
-      - checkout
       - run:
-          name: "Say hello"
-          command: "echo Hello, World!"
+          name: "1. Siapkan Lingkungan & Dependency"
+          command: |
+            apt-get update
+            apt-get install -y bc build-essential libncurses5-dev libssl-dev git bison flex libelf-dev clang lld llvm curl zip ccache tzdata
 
-# Orchestrate jobs using workflows
-# See: https://circleci.com/docs/guides/orchestrate/workflows/ & https://circleci.com/docs/reference/configuration-reference/#workflows
+      - run:
+          name: "2. Clone Kode Sumber Kernel"
+          command: |
+            # Menggunakan depth 1 agar download source code sangat cepat
+            git clone --depth=1 -b lineage-20 https://github.com/LineageOS/android_kernel_xiaomi_surya.git kernel-surya
+
+      # Membuka cache toolchain dan compiler sebelumnya jika ada
+      - restore_cache:
+          keys:
+            - v1-toolchain-{{ arch }}
+            - v1-ccache-{{ .Branch }}-{{ .Revision }}
+            - v1-ccache-{{ .Branch }}-
+            - v1-ccache-
+
+      - run:
+          name: "3. Unduh Toolchain (Proton Clang)"
+          command: |
+            cd kernel-surya
+            if [ ! -d "toolchains/proton-clang" ]; then
+              mkdir -p toolchains
+              git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchains/proton-clang
+            fi
+
+      - run:
+          name: "4. Suntikkan (Patch) KernelSU-Next Stable"
+          command: |
+            cd kernel-surya
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/stable/kernel/setup.sh" | bash -s stable
+
+      - run:
+          name: "5. Konfigurasi & Kompilasi Kernel"
+          command: |
+            cd kernel-surya
+            export ARCH=arm64
+            export SUBARCH=arm64
+            export PATH="$(pwd)/toolchains/proton-clang/bin:$PATH"
+            
+            # Aktifkan CCache lingkungan lokal
+            export USE_CCACHE=1
+            export CCACHE_DIR="$(pwd)/.ccache"
+            ccache -M 5G
+
+            # Buat konfigurasi awal bawaan surya
+            make O=out surya_defconfig
+
+            # Konfigurasi Fitur Utama KernelSU-Next
+            scripts/config --file out/.config --enable KSU
+            scripts/config --file out/.config --enable ASSIST_KSU_NEXT
+            scripts/config --file out/.config --enable OVERLAY_FS
+
+            # OPTIMASI 2: Matikan LTO & Debug agar kompilasi selesai dalam waktu singkat!
+            scripts/config --file out/.config --disable DEBUG_KERNEL
+            scripts/config --file out/.config --disable DEBUG_INFO
+            scripts/config --file out/.config --disable LTO_CLANG_THIN
+            scripts/config --file out/.config --disable LTO_CLANG
+            scripts/config --file out/.config --disable CC_WERROR
+
+            # Mulai proses kompilasi menggunakan semua core yang tersedia (4 Core)
+            make -j$(nproc) O=out CC="ccache clang" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+      - run:
+          name: "6. Packing ke Flashable ZIP"
+          command: |
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+            if [ -f kernel-surya/out/arch/arm64/boot/Image.gz-dtb ]; then
+              cp kernel-surya/out/arch/arm64/boot/Image.gz-dtb anykernel/
+            else
+              cp kernel-surya/out/arch/arm64/boot/Image.gz anykernel/
+            fi
+            cd anykernel
+            zip -r9 ../kernel-surya-ksu-next.zip *
+
+      # Simpan toolchain dan ccache terbaru agar build berikutnya jauh lebih cepat
+      - save_cache:
+          key: v1-toolchain-{{ arch }}
+          paths:
+            - kernel-surya/toolchains
+
+      - save_cache:
+          key: v1-ccache-{{ .Branch }}-{{ .Revision }}
+          paths:
+            - kernel-surya/.ccache
+
+      # Unggah hasil file biner ZIP agar bisa kamu unduh
+      - store_artifacts:
+          path: kernel-surya-ksu-next.zip
+          destination: kernel-release
+
 workflows:
-  say-hello-workflow: # This is the name of the workflow, feel free to change it to better match your workflow.
-    # Inside the workflow, you define the jobs you want to run.
+  version: 2
+  build-workflow:
     jobs:
-      - say-hello
+      - build-kernel
