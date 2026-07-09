@@ -1,86 +1,96 @@
-name: Build MT Manager APK
+name: Build POCO X3 NFC Kernel (surya)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "lineage-20" ]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Android APK
-    runs-on: ubuntu-latest
+    name: Compile Kernel dengan KernelSU-Next
+    runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
+      - name: Checkout Kode Sumber Kernel
+        uses: actions/checkout@v4
+        with:
+          repository: GiaSen/android_kernel_xiaomi_surya
+          ref: lineage-20
+          path: kernel-surya
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
+      - name: Siapkan Dependency Sistem
+        run: |
+          sudo apt update
+          sudo apt install -y bc build-essential libncurses5-dev libssl-dev git bison flex libelf-dev clang lld llvm curl zip
 
-    - name: Set up Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.41.7'
-        channel: 'stable'
-        cache: true
+      - name: Caching Toolchain Compiler
+        id: cache-toolchain
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: kernel-surya/toolchains
+          key: ${{ runner.os }}-toolchain-proton-clang
+          restore-keys: |
+            ${{ runner.os }}-toolchain-
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Unduh Compiler Toolchain (Jika Cache Miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          cd kernel-surya
+          mkdir -p toolchains
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchains/proton-clang
 
-    # Restore pip cache
-    - name: Restore Pip Cache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+      - name: Suntikkan (Patch) KernelSU-Next Legacy
+        run: |
+          cd kernel-surya
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s main
 
-    # Restore Gradle cache
-    - name: Restore Gradle Cache
-      uses: actions/cache/restore@v4
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
+      - name: Konfigurasi dan Kompilasi Kernel
+        run: |
+          cd kernel-surya
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$(pwd)/toolchains/proton-clang/bin:$PATH"
 
-    - name: Install Python Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+          # 1. Load Konfigurasi Defconfig Bawaan
+          make O=out surya_defconfig
 
-    - name: Build Android Release APK
-      run: |
-        yes | flet build apk --split-per-abi
+          # 2. Suntikkan Fitur & Tweak Pilihan Anda secara Otomatis
+          scripts/config --file out/.config --enable KSU
+          scripts/config --file out/.config --enable ASSIST_KSU_NEXT
+          scripts/config --file out/.config --enable OVERLAY_FS
+          scripts/config --file out/.config --enable ENERGY_MODEL
+          scripts/config --file out/.config --enable SCHED_WALT
+          scripts/config --file out/.config --enable DEBUG_KERNEL
+          scripts/config --file out/.config --enable LTO_CLANG_THIN
+          scripts/config --file out/.config --enable CC_WERROR
+          scripts/config --file out/.config --enable CPU_FREQ_GOV_SCHEDUTIL
+          scripts/config --file out/.config --enable CPU_FREQ_GOV_PERFORMANCE
+          scripts/config --file out/.config --enable TCP_CONG_BBR
+          scripts/config --file out/.config --enable WIREGUARD
 
-    # Save pip cache (runs always even on failure)
-    - name: Save Pip Cache
-      uses: actions/cache/save@v4
-      if: always()
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          # 2.5 Tweak Optimasi Hemat Baterai Ekstrem (Battery-First)
+          scripts/config --file out/.config --enable CPU_IDLE_GOV_MENU
+          scripts/config --file out/.config --enable ARM_CPUIDLE
+          scripts/config --file out/.config --enable WQ_POWER_EFFICIENT_DEFAULT
+          scripts/config --file out/.config --enable CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
+          scripts/config --file out/.config --enable PM_AUTOSUSPEND
+          scripts/config --file out/.config --disable CPU_FREQ_GOV_PERFORMANCE
 
-    # Save Gradle cache (runs always even on failure)
-    - name: Save Gradle Cache
-      uses: actions/cache/save@v4
-      if: always()
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          # 3. Mulai Proses Compile Menggunakan Seluruh Core Runner
+          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-    - name: Upload Compiled APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: MT-Manager-Flet-APK
-        path: build/apk/*.apk
+      - name: Bungkus Kernel ke AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          # Salin hasil biner kernel surya
+          cp kernel-surya/out/arch/arm64/boot/Image.gz-dtb anykernel/
+          cd anykernel
+          # Kompres menjadi flashable zip
+          zip -r9 ../kernel-surya-ksu-next.zip *
+
+      - name: Unggah Hasil Flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: POCO-X3-NFC-KernelSU-Next-Legacy
+          path: kernel-surya-ksu-next.zip
