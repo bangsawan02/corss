@@ -1,0 +1,137 @@
+version: 2.1
+
+jobs:
+  build-kernel:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: large
+    environment:
+      ARCH: arm64
+      SUBARCH: arm64
+      USE_CCACHE: "1"
+
+    steps:
+      - run:
+          name: Checkout Kernel Source (shallow clone)
+          command: |
+            git clone --depth=1 --branch lineage-20 \
+              https://github.com/LineageOS/android_kernel_xiaomi_surya.git kernel-surya
+
+      - restore_cache:
+          keys:
+            - apt-cache-v1
+
+      - run:
+          name: Install System Dependencies
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y \
+              bc build-essential libncurses5-dev libssl-dev \
+              git bison flex libelf-dev clang lld llvm \
+              curl zip ccache
+
+      - save_cache:
+          key: apt-cache-v1
+          paths:
+            - /var/cache/apt/archives
+
+      - restore_cache:
+          keys:
+            - toolchain-proton-clang-v1
+
+      - run:
+          name: Download Toolchain (skip if cached)
+          command: |
+            if [ ! -d "kernel-surya/toolchains/proton-clang" ]; then
+              mkdir -p kernel-surya/toolchains
+              git clone --depth=1 \
+                https://github.com/kdrag0n/proton-clang.git \
+                kernel-surya/toolchains/proton-clang
+            fi
+
+      - save_cache:
+          key: toolchain-proton-clang-v1
+          paths:
+            - kernel-surya/toolchains
+
+      - restore_cache:
+          keys:
+            - kernel-ccache-{{ .Revision }}
+            - kernel-ccache-
+
+      - run:
+          name: Inject KernelSU-Next Stable
+          command: |
+            cd kernel-surya
+            curl -LSs \
+              "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/stable/kernel/setup.sh" \
+              | bash -s stable
+
+      - run:
+          name: Configure and Compile Kernel
+          no_output_timeout: 90m
+          command: |
+            cd kernel-surya
+            export PATH="$(pwd)/toolchains/proton-clang/bin:$PATH"
+            export CCACHE_DIR="$(pwd)/.ccache"
+            export CCACHE_COMPRESS=true
+            export CCACHE_COMPRESSLEVEL=1
+            ccache -M 10G
+
+            # Load defconfig
+            make O=out surya_defconfig
+
+            # Terapkan semua konfigurasi sekaligus (lebih efisien dari 18x call terpisah)
+            scripts/config --file out/.config \
+              --enable  KSU \
+              --enable  ASSIST_KSU_NEXT \
+              --enable  OVERLAY_FS \
+              --enable  ENERGY_MODEL \
+              --enable  SCHED_WALT \
+              --disable DEBUG_KERNEL \
+              --enable  LTO_CLANG_THIN \
+              --disable CC_WERROR \
+              --enable  CPU_FREQ_GOV_SCHEDUTIL \
+              --enable  TCP_CONG_BBR \
+              --enable  WIREGUARD \
+              --enable  CPU_IDLE_GOV_MENU \
+              --enable  ARM_CPUIDLE \
+              --enable  WQ_POWER_EFFICIENT_DEFAULT \
+              --enable  CPU_FREQ_DEFAULT_GOV_SCHEDUTIL \
+              --enable  PM_AUTOSUSPEND \
+              --disable CPU_FREQ_GOV_PERFORMANCE
+
+            # Resolusi config tanpa prompt interaktif
+            make olddefconfig O=out
+
+            # Compile dengan ccache + LLVM integrated assembler
+            make -j$(nproc) O=out \
+              CC="ccache clang" \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+      - save_cache:
+          key: kernel-ccache-{{ .Revision }}
+          when: always
+          paths:
+            - kernel-surya/.ccache
+
+      - run:
+          name: Package into AnyKernel3
+          command: |
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+            cp kernel-surya/out/arch/arm64/boot/Image.gz-dtb anykernel/ \
+              || cp kernel-surya/out/arch/arm64/boot/Image.gz anykernel/
+            cd anykernel
+            zip -r9 ../kernel-surya-ksu-next-stable.zip *
+
+      - store_artifacts:
+          path: kernel-surya-ksu-next-stable.zip
+          destination: POCO-X3-NFC-KernelSU-Next-Android13
+
+workflows:
+  build:
+    jobs:
+      - build-kernel
