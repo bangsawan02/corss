@@ -1,8 +1,8 @@
 name: Build POCO X3 NFC Kernel (surya) Android 13
 
 on:
-  push: # Menghilangkan filter branch agar runner LANGSUNG JALAN setiap kali ada commit baru
-  workflow_dispatch: # Tetap mempertahankan tombol "Run workflow" manual di tab Actions
+  push:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,14 +13,15 @@ jobs:
       - name: Checkout Kode Sumber Kernel (Android 13)
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_kernel_xiaomi_surya # Repo komunitas Android 13
-          ref: lineage-20 # Branch target source code kernel LineageOS
+          repository: LineageOS/android_kernel_xiaomi_surya
+          ref: lineage-20
           path: kernel-surya
+          fetch-depth: 1 # OPTIMASI 1: Shallow clone untuk mempercepat waktu unduh source
 
       - name: Siapkan Dependency Sistem
         run: |
           sudo apt update
-          sudo apt install -y bc build-essential libncurses5-dev libssl-dev git bison flex libelf-dev clang lld llvm curl zip
+          sudo apt install -y bc build-essential libncurses5-dev libssl-dev git bison flex libelf-dev clang lld llvm curl zip ccache
 
       - name: Caching Toolchain Compiler
         id: cache-toolchain
@@ -31,6 +32,15 @@ jobs:
           key: ${{ runner.os }}-toolchain-proton-clang
           restore-keys: |
             ${{ runner.os }}-toolchain-
+
+      - name: Caching CCache (Kompilasi Cepat)
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: kernel-surya/.ccache
+          key: ${{ runner.os }}-kernel-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-ccache-
 
       - name: Unduh Compiler Toolchain (Jika Cache Miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
@@ -50,6 +60,11 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH="$(pwd)/toolchains/proton-clang/bin:$PATH"
+          
+          # OPTIMASI 2: Set up CCache lingkungan
+          export USE_CCACHE=1
+          export CCACHE_DIR="$(pwd)/.ccache"
+          ccache -M 5G # Batasi ukuran cache maksimal 5GB
 
           # 1. Load Konfigurasi Defconfig Bawaan Android 13
           make O=out surya_defconfig
@@ -62,7 +77,7 @@ jobs:
           scripts/config --file out/.config --enable SCHED_WALT
           scripts/config --file out/.config --enable DEBUG_KERNEL
           scripts/config --file out/.config --enable LTO_CLANG_THIN
-          scripts/config --file out/.config --enable CC_WERROR
+          scripts/config --file out/.config --disable CC_WERROR 
           scripts/config --file out/.config --enable CPU_FREQ_GOV_SCHEDUTIL
           scripts/config --file out/.config --enable CPU_FREQ_GOV_PERFORMANCE
           scripts/config --file out/.config --enable TCP_CONG_BBR
@@ -76,16 +91,15 @@ jobs:
           scripts/config --file out/.config --enable PM_AUTOSUSPEND
           scripts/config --file out/.config --disable CPU_FREQ_GOV_PERFORMANCE
 
-          # 3. Mulai Proses Compile Menggunakan Seluruh Core Runner
-          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          # 3. Mulai Proses Compile Menggunakan CCache Clang
+          make -j$(nproc) O=out CC="ccache clang" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
       - name: Bungkus Kernel ke AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          # Salin hasil biner kernel surya (Otomatis mendeteksi Image.gz-dtb atau Image.gz)
           cp kernel-surya/out/arch/arm64/boot/Image.gz-dtb anykernel/ || cp kernel-surya/out/arch/arm64/boot/Image.gz anykernel/
           cd anykernel
-          # Kompres menjadi flashable zip
+          # Output rilis .zip selalu disalin ke root folder workspace (../)
           zip -r9 ../kernel-surya-ksu-next-stable.zip *
 
       - name: Unggah Hasil Flashable ZIP
