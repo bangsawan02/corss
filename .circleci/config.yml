@@ -101,7 +101,9 @@ jobs:
               --enable  WQ_POWER_EFFICIENT_DEFAULT \
               --enable  CPU_FREQ_DEFAULT_GOV_SCHEDUTIL \
               --enable  PM_AUTOSUSPEND \
-              --disable CPU_FREQ_GOV_PERFORMANCE
+              --disable CPU_FREQ_GOV_PERFORMANCE \
+              --enable  CGROUP_SCHED \
+              --enable  FAIR_GROUP_SCHED
 
             # Resolusi config tanpa prompt interaktif
             make olddefconfig O=out
