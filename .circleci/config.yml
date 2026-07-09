@@ -9,6 +9,8 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       USE_CCACHE: "1"
+      DEBIAN_FRONTEND: noninteractive
+      NEEDRESTART_MODE: a
 
     steps:
       - run:
