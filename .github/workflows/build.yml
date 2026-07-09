@@ -1,21 +1,20 @@
-name: Build POCO X3 NFC Kernel (surya)
+name: Build POCO X3 NFC Kernel (surya) Android 13
 
 on:
-  push:
-    branches: [ "surya-q-oss" ]
-  workflow_dispatch:
+  push: # Menghilangkan filter branch agar runner LANGSUNG JALAN setiap kali ada commit baru
+  workflow_dispatch: # Tetap mempertahankan tombol "Run workflow" manual di tab Actions
 
 jobs:
   build:
-    name: Compile Kernel dengan KernelSU-Next
+    name: Compile Kernel dengan KernelSU-Next Stable
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Kode Sumber Kernel
+      - name: Checkout Kode Sumber Kernel (Android 13)
         uses: actions/checkout@v4
         with:
-          repository: MiCode/Xiaomi_Kernel_OpenSource
-          ref: surya-q-oss
+          repository: LineageOS/android_kernel_xiaomi_surya # Repo komunitas Android 13
+          ref: lineage-20 # Branch target source code kernel LineageOS
           path: kernel-surya
 
       - name: Siapkan Dependency Sistem
@@ -40,10 +39,10 @@ jobs:
           mkdir -p toolchains
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchains/proton-clang
 
-      - name: Suntikkan (Patch) KernelSU-Next Legacy
+      - name: Suntikkan (Patch) KernelSU-Next Stable
         run: |
           cd kernel-surya
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/stable/kernel/setup.sh" | bash -s stable
 
       - name: Konfigurasi dan Kompilasi Kernel
         run: |
@@ -52,10 +51,10 @@ jobs:
           export SUBARCH=arm64
           export PATH="$(pwd)/toolchains/proton-clang/bin:$PATH"
 
-          # 1. Load Konfigurasi Defconfig Bawaan
+          # 1. Load Konfigurasi Defconfig Bawaan Android 13
           make O=out surya_defconfig
 
-          # 2. Suntikkan Fitur & Tweak Pilihan Anda secara Otomatis
+          # 2. Suntikkan Fitur & Tweak KernelSU-Next secara Otomatis
           scripts/config --file out/.config --enable KSU
           scripts/config --file out/.config --enable ASSIST_KSU_NEXT
           scripts/config --file out/.config --enable OVERLAY_FS
@@ -69,7 +68,7 @@ jobs:
           scripts/config --file out/.config --enable TCP_CONG_BBR
           scripts/config --file out/.config --enable WIREGUARD
 
-          # 2.5 Tweak Optimasi Hemat Baterai Ekstrem (Battery-First)
+          # 2.5 Tweak Optimasi Hemat Baterai (Battery-First)
           scripts/config --file out/.config --enable CPU_IDLE_GOV_MENU
           scripts/config --file out/.config --enable ARM_CPUIDLE
           scripts/config --file out/.config --enable WQ_POWER_EFFICIENT_DEFAULT
@@ -83,14 +82,14 @@ jobs:
       - name: Bungkus Kernel ke AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          # Salin hasil biner kernel surya
-          cp kernel-surya/out/arch/arm64/boot/Image.gz-dtb anykernel/
+          # Salin hasil biner kernel surya (Otomatis mendeteksi Image.gz-dtb atau Image.gz)
+          cp kernel-surya/out/arch/arm64/boot/Image.gz-dtb anykernel/ || cp kernel-surya/out/arch/arm64/boot/Image.gz anykernel/
           cd anykernel
           # Kompres menjadi flashable zip
-          zip -r9 ../kernel-surya-ksu-next.zip *
+          zip -r9 ../kernel-surya-ksu-next-stable.zip *
 
       - name: Unggah Hasil Flashable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: POCO-X3-NFC-KernelSU-Next-Legacy
-          path: kernel-surya-ksu-next.zip
+          name: POCO-X3-NFC-KernelSU-Next-Android13
+          path: kernel-surya-ksu-next-stable.zip
