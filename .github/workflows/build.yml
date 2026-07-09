@@ -2,7 +2,7 @@ name: Build POCO X3 NFC Kernel (surya)
 
 on:
   push:
-    branches: [ "lineage-20" ]
+    branches: [ "fourteen" ]
   workflow_dispatch:
 
 jobs:
@@ -14,8 +14,8 @@ jobs:
       - name: Checkout Kode Sumber Kernel
         uses: actions/checkout@v4
         with:
-          repository: GiaSen/android_kernel_xiaomi_surya
-          ref: lineage-20
+          repository: shantanu-pande/kernel_xiaomi_surya
+          ref: fourteen
           path: kernel-surya
 
       - name: Siapkan Dependency Sistem
