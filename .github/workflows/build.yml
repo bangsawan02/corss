@@ -1,109 +1,93 @@
-name: Build POCO X3 NFC Kernel (surya) Android 13
+name: Run Alpine IceWM with Free Cloudflare Tunnel
 
 on:
   push:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Compile Kernel dengan KernelSU-Next Stable
-    runs-on: ubuntu-22.04
-
+  desktop-job:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kode Sumber Kernel (Android 13)
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_xiaomi_surya
-          ref: lineage-20
-          path: kernel-surya
-          fetch-depth: 1 # OPTIMASI 1: Shallow clone untuk mempercepat waktu unduh source
 
-      - name: Siapkan Dependency Sistem
-        run: |
-          sudo apt update
-          sudo apt install -y bc build-essential libncurses5-dev libssl-dev git bison flex libelf-dev clang lld llvm curl zip ccache
+      - name: Create local data directory
+        run: mkdir -p ${{ github.workspace }}/persistent-data
 
-      - name: Caching Toolchain Compiler
-        id: cache-toolchain
-        uses: actions/cache@v4
-        if: always()
+      # 1. Restore Cache
+      - name: Restore persistent data cache
+        uses: actions/cache/restore@v4
         with:
-          path: kernel-surya/toolchains
-          key: ${{ runner.os }}-toolchain-proton-clang
+          path: ${{ github.workspace }}/persistent-data
+          key: desktop-data-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-toolchain-
+            desktop-data-
 
-      - name: Caching CCache (Kompilasi Cepat)
-        uses: actions/cache@v4
+      # 2. Bersihkan file temporary / lock file bekas run sebelumnya
+      - name: Clean stale lock files from cache
+        run: |
+          sudo rm -rf ${{ github.workspace }}/persistent-data/.X11-unix
+          sudo rm -f ${{ github.workspace }}/persistent-data/*.lock
+          sudo rm -f ${{ github.workspace }}/persistent-data/*.pid
+
+      - name: Setup Cloudflared & Run Alpine IceWM
+        run: |
+          # Download binary cloudflared
+          sudo curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+
+          # Jalankan Container Alpine IceWM
+          docker run -d --name alpine-desktop \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ=Asia/Jakarta \
+            -v ${{ github.workspace }}/persistent-data:/config \
+            -p 3000:3000 \
+            --shm-size="1gb" \
+            lscr.io/linuxserver/webtop:alpine-icewm
+
+      - name: Start Quick Tunnel and Get URL Fast
+        run: |
+          # Tambahkan --http-host-header agar WebTop selalu menerima Host localhost:3000
+          cloudflared tunnel --url http://localhost:3000 --http-host-header="localhost:3000" > cloudflare.log 2>&1 &
+
+          echo "Menunggu URL Cloudflare..."
+          for i in {1..15}; do
+            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflare.log || true)
+            if [ -n "$URL" ]; then
+              echo "=================================================="
+              echo " KLIK LINK DI BAWAH INI UNTUK MENGAKSES DESKTOP:"
+              echo "$URL"
+              echo "=================================================="
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat cloudflare.log
+
+      - name: Keep Alive
+        run: |
+          echo "Workflow berjalan. Silakan akses link di atas."
+          sleep 3600
+
+      # 3. Fix permissions sebelum menyimpan
+      - name: Fix permissions for persistent data
         if: always()
+        run: sudo chmod -R 777 ${{ github.workspace }}/persistent-data
+
+      # 4. Simpan Cache
+      - name: Save persistent data cache
+        if: always()
+        uses: actions/cache/save@v4
         with:
-          path: kernel-surya/.ccache
-          key: ${{ runner.os }}-kernel-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-kernel-ccache-
+          path: ${{ github.workspace }}/persistent-data
+          key: desktop-data-${{ github.run_id }}
 
-      - name: Unduh Compiler Toolchain (Jika Cache Miss)
-        if: steps.cache-toolchain.outputs.cache-hit != 'true'
-        run: |
-          cd kernel-surya
-          mkdir -p toolchains
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchains/proton-clang
-
-      - name: Suntikkan (Patch) KernelSU-Next Stable
-        run: |
-          cd kernel-surya
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/stable/kernel/setup.sh" | bash -s stable
-
-      - name: Konfigurasi dan Kompilasi Kernel
-        run: |
-          cd kernel-surya
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH="$(pwd)/toolchains/proton-clang/bin:$PATH"
-          
-          # OPTIMASI 2: Set up CCache lingkungan
-          export USE_CCACHE=1
-          export CCACHE_DIR="$(pwd)/.ccache"
-          ccache -M 5G # Batasi ukuran cache maksimal 5GB
-
-          # 1. Load Konfigurasi Defconfig Bawaan Android 13
-          make O=out surya_defconfig
-
-          # 2. Suntikkan Fitur & Tweak KernelSU-Next secara Otomatis
-          scripts/config --file out/.config --enable KSU
-          scripts/config --file out/.config --enable ASSIST_KSU_NEXT
-          scripts/config --file out/.config --enable OVERLAY_FS
-          scripts/config --file out/.config --enable ENERGY_MODEL
-          scripts/config --file out/.config --enable SCHED_WALT
-          scripts/config --file out/.config --enable DEBUG_KERNEL
-          scripts/config --file out/.config --enable LTO_CLANG_THIN
-          scripts/config --file out/.config --disable CC_WERROR 
-          scripts/config --file out/.config --enable CPU_FREQ_GOV_SCHEDUTIL
-          scripts/config --file out/.config --enable CPU_FREQ_GOV_PERFORMANCE
-          scripts/config --file out/.config --enable TCP_CONG_BBR
-          scripts/config --file out/.config --enable WIREGUARD
-
-          # 2.5 Tweak Optimasi Hemat Baterai (Battery-First)
-          scripts/config --file out/.config --enable CPU_IDLE_GOV_MENU
-          scripts/config --file out/.config --enable ARM_CPUIDLE
-          scripts/config --file out/.config --enable WQ_POWER_EFFICIENT_DEFAULT
-          scripts/config --file out/.config --enable CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
-          scripts/config --file out/.config --enable PM_AUTOSUSPEND
-          scripts/config --file out/.config --disable CPU_FREQ_GOV_PERFORMANCE
-
-          # 3. Mulai Proses Compile Menggunakan CCache Clang
-          make -j$(nproc) O=out CC="ccache clang" CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-androideabi-
-
-      - name: Bungkus Kernel ke AnyKernel3
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          cp kernel-surya/out/arch/arm64/boot/Image.gz-dtb anykernel/ || cp kernel-surya/out/arch/arm64/boot/Image.gz anykernel/
-          cd anykernel
-          # Output rilis .zip selalu disalin ke root folder workspace (../)
-          zip -r9 ../kernel-surya-ksu-next-stable.zip *
-
-      - name: Unggah Hasil Flashable ZIP
+      # 5. Upload Artifacts
+      - name: Save data via Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: POCO-X3-NFC-KernelSU-Next-Android13
-          path: kernel-surya-ksu-next-stable.zip
+          name: saved-desktop-data
+          path: ${{ github.workspace }}/persistent-data/
