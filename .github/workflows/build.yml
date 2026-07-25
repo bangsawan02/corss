@@ -46,37 +46,41 @@ jobs:
             --shm-size="1gb" \
             lscr.io/linuxserver/webtop:alpine-icewm
 
-      - name: Start Quick Tunnel and Get URL Fast
+      # 3. Jalankan Tunnel, Ambil URL, dan Tahan Proses dalam 1 Step
+      - name: Start Quick Tunnel and Keep Alive
         run: |
-          # Tambahkan --http-host-header agar WebTop selalu menerima Host localhost:3000
+          # Jalankan tunnel di background
           cloudflared tunnel --url http://localhost:3000 --http-host-header="localhost:3000" > cloudflare.log 2>&1 &
 
+          # Polling loop: Cek log sampai link muncul
           echo "Menunggu URL Cloudflare..."
-          for i in {1..15}; do
+          for i in {1..20}; do
             URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflare.log || true)
             if [ -n "$URL" ]; then
               echo "=================================================="
               echo " KLIK LINK DI BAWAH INI UNTUK MENGAKSES DESKTOP:"
               echo "$URL"
               echo "=================================================="
-              exit 0
+              break
             fi
             sleep 1
           done
 
-          cat cloudflare.log
+          if [ -z "$URL" ]; then
+            cat cloudflare.log
+            exit 1
+          fi
 
-      - name: Keep Alive
-        run: |
+          # Tahan proses di dalam step ini agar tunnel TIDAK MATI
           echo "Workflow berjalan. Silakan akses link di atas."
           sleep 3600
 
-      # 3. Fix permissions sebelum menyimpan
+      # 4. Fix permissions sebelum menyimpan
       - name: Fix permissions for persistent data
         if: always()
         run: sudo chmod -R 777 ${{ github.workspace }}/persistent-data
 
-      # 4. Simpan Cache
+      # 5. Simpan Cache
       - name: Save persistent data cache
         if: always()
         uses: actions/cache/save@v4
@@ -84,7 +88,7 @@ jobs:
           path: ${{ github.workspace }}/persistent-data
           key: desktop-data-${{ github.run_id }}
 
-      # 5. Upload Artifacts
+      # 6. Upload Artifacts
       - name: Save data via Artifacts
         if: always()
         uses: actions/upload-artifact@v4
