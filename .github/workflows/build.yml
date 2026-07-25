@@ -23,19 +23,19 @@ jobs:
           restore-keys: |
             desktop-data-
 
-      # 2. Bersihkan file temporary / lock file bekas run sebelumnya
+      # 2. Bersihkan file temporary / lock file
       - name: Clean stale lock files from cache
         run: |
           sudo rm -rf ${{ github.workspace }}/persistent-data/.X11-unix
           sudo rm -f ${{ github.workspace }}/persistent-data/*.lock
           sudo rm -f ${{ github.workspace }}/persistent-data/*.pid
 
-      # 3. Setup Cloudflared & Run Container
-      - name: Setup Cloudflared & Run Alpine IceWM
+      # 3. Setup Container & Download Cloudflared
+      - name: Setup Alpine IceWM & Download Cloudflared
         run: |
-          # Download binary cloudflared
-          sudo curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
-          sudo chmod +x /usr/local/bin/cloudflared
+          # Download cloudflared ke folder persistent-data agar bisa diakses container
+          sudo curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ${{ github.workspace }}/persistent-data/cloudflared
+          sudo chmod +x ${{ github.workspace }}/persistent-data/cloudflared
 
           # Jalankan Container Alpine IceWM
           docker run -d --name alpine-desktop \
@@ -47,24 +47,21 @@ jobs:
             --shm-size="1gb" \
             lscr.io/linuxserver/webtop:alpine-icewm
 
-      # 4. Jalankan Tunnel & Tampilkan Link di Halaman Summary GitHub
-      - name: Start Quick Tunnel and Keep Alive
+      # 4. Jalankan Tunnel di dalam Docker & Buat Summary (Selesai Cepat)
+      - name: Get Tunnel URL
         run: |
-          # Jalankan tunnel di background
-          cloudflared tunnel --url http://localhost:3000 --http-host-header="localhost:3000" > cloudflare.log 2>&1 &
+          # Jalankan cloudflared di dalam Docker agar tidak terbunuh saat step selesai
+          docker exec -d alpine-desktop sh -c "/config/cloudflared tunnel --url http://localhost:3000 --http-host-header='localhost:3000' > /config/cloudflare.log 2>&1"
 
-          # Polling loop: Cek log sampai link muncul
           echo "Menunggu URL Cloudflare..."
           for i in {1..20}; do
-            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflare.log || true)
+            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' ${{ github.workspace }}/persistent-data/cloudflare.log || true)
             if [ -n "$URL" ]; then
-              # Write to GitHub Step Summary (Tampil di halaman Summary utama GitHub)
+              # Tulis ke Summary
               echo "## 🚀 Alpine IceWM Desktop Ready" >> $GITHUB_STEP_SUMMARY
-              echo "### [👉 Klik di sini untuk membuka Desktop]($URL)" >> $GITHUB_STEP_SUMMARY
+              echo "### [👉 KLIK DI SINI UNTUK MEMBUKA DESKTOP]($URL)" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "URL Direct: \`$URL\`" >> $GITHUB_STEP_SUMMARY
-              
-              # Buat notifikasi khusus
+              echo "**URL Direct:** \`$URL\`" >> $GITHUB_STEP_SUMMARY
               echo "::notice title=LINK DESKTOP::$URL"
               break
             fi
@@ -72,20 +69,22 @@ jobs:
           done
 
           if [ -z "$URL" ]; then
-            cat cloudflare.log
+            cat ${{ github.workspace }}/persistent-data/cloudflare.log
             exit 1
           fi
 
-          # Tahan proses agar tunnel tidak mati
-          echo "Workflow berjalan. Akses link melalui tab Summary di atas."
+      # 5. Keep Alive (Step terpisah agar tidak menahan perenderan Summary)
+      - name: Keep Alive
+        run: |
+          echo "Workflow berjalan. Silakan cek link di halaman Summary."
           sleep 3600
 
-      # 5. Fix permissions sebelum menyimpan
+      # 6. Fix permissions
       - name: Fix permissions for persistent data
         if: always()
         run: sudo chmod -R 777 ${{ github.workspace }}/persistent-data
 
-      # 6. Simpan Cache
+      # 7. Simpan Cache
       - name: Save persistent data cache
         if: always()
         uses: actions/cache/save@v4
@@ -93,7 +92,7 @@ jobs:
           path: ${{ github.workspace }}/persistent-data
           key: desktop-data-${{ github.run_id }}
 
-      # 7. Upload Artifacts
+      # 8. Upload Artifacts
       - name: Save data via Artifacts
         if: always()
         uses: actions/upload-artifact@v4
