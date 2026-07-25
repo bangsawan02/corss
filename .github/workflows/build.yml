@@ -32,8 +32,8 @@ jobs:
           sudo rm -f ${{ github.workspace }}/persistent-data/*.lock
           sudo rm -f ${{ github.workspace }}/persistent-data/*.pid
 
-      # 3. Setup Container Alpine, Install Git & Setup SSH Server
-      - name: Setup Alpine IceWM, Git & SSH
+      # 3. Setup Container Alpine & Install Git
+      - name: Setup Alpine IceWM & Git
         run: |
           docker run -d --name alpine-desktop \
             -e PUID=1000 \
@@ -41,7 +41,6 @@ jobs:
             -e TZ=Asia/Jakarta \
             -v ${{ github.workspace }}/persistent-data:/config \
             -p 3000:3000 \
-            -p 2222:22 \
             --shm-size="1gb" \
             lscr.io/linuxserver/webtop:alpine-icewm
 
@@ -54,34 +53,26 @@ jobs:
             sleep 2
           done
 
-          echo "Menginstal Git & OpenSSH Server..."
-          docker exec alpine-desktop apk add --no-cache git openssh
-          docker exec alpine-desktop ssh-keygen -A
+          echo "Menginstal Git..."
+          docker exec alpine-desktop apk add --no-cache git
 
-          # Set password untuk user 'root' & 'abc' menjadi: 123456
-          docker exec alpine-desktop sh -c "echo 'root:123456' | chpasswd"
-          docker exec alpine-desktop sh -c "echo 'abc:123456' | chpasswd"
-          docker exec alpine-desktop sh -c "sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config"
-          
-          # Jalankan SSH Daemon
-          docker exec alpine-desktop /usr/sbin/sshd
-
-      # 4. Jalankan Cloudflare Web Tunnel & SSH Tunnel (localhost.run)
-      - name: Start Tunnels (Web & SSH)
+      # 4. Jalankan Tunnels (Cloudflare Web & Tmate SSH)
+      - name: Start Tunnels
         run: |
-          # Generate SSH Key untuk Runner GitHub agar localhost.run bisa diautentikasi
-          mkdir -p ~/.ssh
-          [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
-
           # A. Web Tunnel via Cloudflare
           docker run -d --network host --name cloudflared-tunnel cloudflare/cloudflared:latest tunnel --url http://localhost:3000 --http-host-header="localhost:3000"
 
-          # B. SSH Tunnel via localhost.run (Gunakan port 0 untuk TCP Forwarding)
-          ssh -o StrictHostKeyChecking=no -R 0:localhost:2222 nokey@localhost.run > ssh_tunnel.log 2>&1 &
-
-          echo "Menunggu URL Tunnels..."
+          # B. SSH Terminal via Tmate
+          echo "Menyiapkan SSH Tunnel (Tmate)..."
+          sudo apt-get update > /dev/null 2>&1
+          sudo apt-get install -y tmate > /dev/null 2>&1
           
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          SSH_CMD=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+
           # Get Cloudflare Web URL
+          echo "Menunggu URL Cloudflare..."
           WEB_URL=""
           for i in {1..20}; do
             WEB_URL=$(docker logs cloudflared-tunnel 2>&1 | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | head -n 1)
@@ -89,25 +80,10 @@ jobs:
             sleep 1
           done
 
-          # Get SSH Command
-          SSH_CMD=""
-          for i in {1..20}; do
-            SSH_CMD=$(grep -E 'ssh -p [0-9]+' ssh_tunnel.log | head -n 1 || true)
-            [ -n "$SSH_CMD" ] && break
-            sleep 1
-          done
-
-          if [ -n "$SSH_CMD" ]; then
-            CLEAN_SSH=$(echo "$SSH_CMD" | sed 's/nokey@/root@/')
-          else
-            CLEAN_SSH="Gagal mengambil perintah SSH. Log:"
-            cat ssh_tunnel.log || true
-          fi
-
           # Cetak LANGSUNG ke Konsol Log
           echo "=================================================="
           echo "🌐 LINK DESKTOP: $WEB_URL"
-          echo "🔑 PERINTAH SSH: $CLEAN_SSH"
+          echo "🔑 PERINTAH SSH: $SSH_CMD"
           echo "=================================================="
 
           # Tuliskan juga ke GitHub Step Summary
@@ -117,11 +93,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "### 🔑 SSH Terminal Access" >> $GITHUB_STEP_SUMMARY
-          echo "Gunakan perintah di bawah ini di Termux / Terminal kamu:" >> $GITHUB_STEP_SUMMARY
+          echo "Gunakan perintah di bawah ini di Termux / Terminal kamu (Tanpa Password):" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "$CLEAN_SSH" >> $GITHUB_STEP_SUMMARY
+          echo "$SSH_CMD" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Password SSH:** \`123456\`" >> $GITHUB_STEP_SUMMARY
+          echo "> **💡 PENTING:** Setelah masuk via SSH, ketik perintah ini untuk masuk ke dalam Alpine:" >> $GITHUB_STEP_SUMMARY
+          echo "> \`docker exec -it alpine-desktop sh\`" >> $GITHUB_STEP_SUMMARY
 
       # 5. Keep Alive
       - name: Keep Alive
