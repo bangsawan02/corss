@@ -23,17 +23,21 @@ jobs:
           restore-keys: |
             desktop-data-
 
-      # 2. Bersihkan file temporary / lock file
-      - name: Clean stale lock files from cache
+      # 2. PERBAIKAN PERMISSION & CLEANUP DINI (Mencegah 502)
+      - name: Fix Cache Permissions & Clean Locks
         run: |
+          # Berikan hak milik ke PUID/PGID 1000 (User WebTop)
+          sudo chown -R 1000:1000 ${{ github.workspace }}/persistent-data
+          sudo chmod -R 777 ${{ github.workspace }}/persistent-data
+          
+          # Hapus file sisa sesi sebelumnya
           sudo rm -rf ${{ github.workspace }}/persistent-data/.X11-unix
           sudo rm -f ${{ github.workspace }}/persistent-data/*.lock
           sudo rm -f ${{ github.workspace }}/persistent-data/*.pid
 
-      # 3. Setup Container Alpine IceWM
-      - name: Setup Alpine IceWM
+      # 3. Setup Container Alpine IceWM & Install Git
+      - name: Setup Alpine IceWM & Git
         run: |
-          # Jalankan Container Alpine IceWM
           docker run -d --name alpine-desktop \
             -e PUID=1000 \
             -e PGID=1000 \
@@ -43,13 +47,23 @@ jobs:
             --shm-size="1gb" \
             lscr.io/linuxserver/webtop:alpine-icewm
 
-          echo "Menunggu Desktop booting (15 detik)..."
-          sleep 15
+          # Healthcheck: Tunggu sampai port 3000 benar-benar MERESPONS (Max 60 detik)
+          echo "Menunggu WebTop aktif di port 3000..."
+          for i in {1..30}; do
+            if curl -s http://localhost:3000 > /dev/null; then
+              echo "WebTop SIAP dan merespons di port 3000!"
+              break
+            fi
+            sleep 2
+          done
 
-      # 4. Jalankan Tunnel via Docker & Buat Summary (Selesai Cepat)
+          # Install Git secara otomatis
+          echo "Menginstal Git..."
+          docker exec alpine-desktop apk add --no-cache git
+
+      # 4. Jalankan Tunnel HANYA SETELAH WebTop SIAP
       - name: Start Cloudflare Tunnel
         run: |
-          # Jalankan Cloudflare lewat official Docker image di host network
           docker run -d --network host --name cloudflared-tunnel cloudflare/cloudflared:latest tunnel --url http://localhost:3000 --http-host-header="localhost:3000"
 
           echo "Menunggu URL Cloudflare..."
@@ -61,7 +75,6 @@ jobs:
               echo "### [👉 KLIK DI SINI UNTUK MEMBUKA DESKTOP]($URL)" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**URL Direct:** \`$URL\`" >> $GITHUB_STEP_SUMMARY
-              echo "> 💡 *Catatan: Jika saat diklik muncul '502 Bad Gateway', tunggu 10 detik lalu refresh halamannya.*" >> $GITHUB_STEP_SUMMARY
               
               echo "::notice title=LINK DESKTOP::$URL"
               break
@@ -74,13 +87,13 @@ jobs:
             exit 1
           fi
 
-      # 5. Keep Alive (Menahan agar desktop bisa dipakai 1 jam)
+      # 5. Keep Alive
       - name: Keep Alive
         run: |
           echo "Workflow berjalan. Silakan cek link di halaman Summary."
           sleep 3600
 
-      # 6. Fix permissions
+      # 6. Fix permissions sebelum menyimpan
       - name: Fix permissions for persistent data
         if: always()
         run: sudo chmod -R 777 ${{ github.workspace }}/persistent-data
