@@ -1,4 +1,4 @@
-name: Run Alpine IceWM with Free Cloudflare Tunnel
+name: Run Alpine IceWM with Free Cloudflare & SSH Tunnel
 
 on:
   push:
@@ -23,20 +23,17 @@ jobs:
           restore-keys: |
             desktop-data-
 
-      # 2. PERBAIKAN PERMISSION & CLEANUP DINI (Mencegah 502)
+      # 2. Fix Permission & Cleanup
       - name: Fix Cache Permissions & Clean Locks
         run: |
-          # Berikan hak milik ke PUID/PGID 1000 (User WebTop)
           sudo chown -R 1000:1000 ${{ github.workspace }}/persistent-data
           sudo chmod -R 777 ${{ github.workspace }}/persistent-data
-          
-          # Hapus file sisa sesi sebelumnya
           sudo rm -rf ${{ github.workspace }}/persistent-data/.X11-unix
           sudo rm -f ${{ github.workspace }}/persistent-data/*.lock
           sudo rm -f ${{ github.workspace }}/persistent-data/*.pid
 
-      # 3. Setup Container Alpine IceWM & Install Git
-      - name: Setup Alpine IceWM & Git
+      # 3. Setup Container Alpine, Install Git & Setup SSH Server
+      - name: Setup Alpine IceWM, Git & SSH
         run: |
           docker run -d --name alpine-desktop \
             -e PUID=1000 \
@@ -44,56 +41,84 @@ jobs:
             -e TZ=Asia/Jakarta \
             -v ${{ github.workspace }}/persistent-data:/config \
             -p 3000:3000 \
+            -p 2222:22 \
             --shm-size="1gb" \
             lscr.io/linuxserver/webtop:alpine-icewm
 
-          # Healthcheck: Tunggu sampai port 3000 benar-benar MERESPONS (Max 60 detik)
           echo "Menunggu WebTop aktif di port 3000..."
           for i in {1..30}; do
             if curl -s http://localhost:3000 > /dev/null; then
-              echo "WebTop SIAP dan merespons di port 3000!"
+              echo "WebTop SIAP!"
               break
             fi
             sleep 2
           done
 
-          # Install Git secara otomatis
-          echo "Menginstal Git..."
-          docker exec alpine-desktop apk add --no-cache git
+          echo "Menginstal Git & OpenSSH Server..."
+          docker exec alpine-desktop apk add --no-cache git openssh
+          docker exec alpine-desktop ssh-keygen -A
 
-      # 4. Jalankan Tunnel HANYA SETELAH WebTop SIAP
-      - name: Start Cloudflare Tunnel
+          # Set password untuk user 'root' & 'abc' menjadi: 123456
+          docker exec alpine-desktop sh -c "echo 'root:123456' | chpasswd"
+          docker exec alpine-desktop sh -c "echo 'abc:123456' | chpasswd"
+          docker exec alpine-desktop sh -c "sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config"
+          
+          # Jalankan SSH Daemon
+          docker exec alpine-desktop /usr/sbin/sshd
+
+      # 4. Jalankan Cloudflare Web Tunnel & SSH Tunnel (localhost.run)
+      - name: Start Tunnels (Web & SSH)
         run: |
+          # A. Web Tunnel via Cloudflare
           docker run -d --network host --name cloudflared-tunnel cloudflare/cloudflared:latest tunnel --url http://localhost:3000 --http-host-header="localhost:3000"
 
-          echo "Menunggu URL Cloudflare..."
+          # B. SSH Tunnel via localhost.run
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:2222 nokey@localhost.run > ssh_tunnel.log 2>&1 &
+
+          echo "Menunggu URL Tunnels..."
+          
+          # Get Cloudflare Web URL
+          WEB_URL=""
           for i in {1..20}; do
-            URL=$(docker logs cloudflared-tunnel 2>&1 | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | head -n 1)
-            if [ -n "$URL" ]; then
-              # Tulis ke Summary
-              echo "## 🚀 Alpine IceWM Desktop Ready" >> $GITHUB_STEP_SUMMARY
-              echo "### [👉 KLIK DI SINI UNTUK MEMBUKA DESKTOP]($URL)" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**URL Direct:** \`$URL\`" >> $GITHUB_STEP_SUMMARY
-              
-              echo "::notice title=LINK DESKTOP::$URL"
-              break
-            fi
-            sleep 2
+            WEB_URL=$(docker logs cloudflared-tunnel 2>&1 | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | head -n 1)
+            [ -n "$WEB_URL" ] && break
+            sleep 1
           done
 
-          if [ -z "$URL" ]; then
-            docker logs cloudflared-tunnel
-            exit 1
+          # Get SSH Command
+          SSH_CMD=""
+          for i in {1..15}; do
+            SSH_CMD=$(grep -o 'ssh -p [0-9]* [^ ]*' ssh_tunnel.log || true)
+            [ -n "$SSH_CMD" ] && break
+            sleep 1
+          done
+
+          # Tuliskan ke GitHub Step Summary
+          echo "## 🚀 Alpine IceWM Workspace Ready" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌐 Web Desktop" >> $GITHUB_STEP_SUMMARY
+          echo "[👉 KLIK DI SINI UNTUK MEMBUKA DESKTOP]($WEB_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔑 SSH Terminal Access" >> $GITHUB_STEP_SUMMARY
+          echo "Gunakan perintah di bawah ini di Termux / Terminal kamu:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$SSH_CMD" ]; then
+            # Ganti user default 'nokey' menjadi 'root'
+            CLEAN_SSH=$(echo "$SSH_CMD" | sed 's/nokey@/root@/')
+            echo "$CLEAN_SSH" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "# Gagal mengambil URL SSH, silakan cek log" >> $GITHUB_STEP_SUMMARY
           fi
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Password SSH:** \`123456\`" >> $GITHUB_STEP_SUMMARY
 
       # 5. Keep Alive
       - name: Keep Alive
         run: |
-          echo "Workflow berjalan. Silakan cek link di halaman Summary."
+          echo "Workflow berjalan. Cek link Desktop & SSH di halaman Summary."
           sleep 3600
 
-      # 6. Fix permissions sebelum menyimpan
+      # 6. Fix permissions
       - name: Fix permissions for persistent data
         if: always()
         run: sudo chmod -R 777 ${{ github.workspace }}/persistent-data
