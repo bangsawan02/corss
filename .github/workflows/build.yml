@@ -93,7 +93,15 @@ jobs:
             sleep 1
           done
 
-          # Tuliskan ke GitHub Step Summary
+          CLEAN_SSH=$(echo "$SSH_CMD" | sed 's/nokey@/root@/')
+
+          # Cetak LANGSUNG ke Konsol Log
+          echo "=================================================="
+          echo "🌐 LINK DESKTOP: $WEB_URL"
+          echo "🔑 PERINTAH SSH: $CLEAN_SSH"
+          echo "=================================================="
+
+          # Tuliskan juga ke GitHub Step Summary
           echo "## 🚀 Alpine IceWM Workspace Ready" >> $GITHUB_STEP_SUMMARY
           echo "### 🌐 Web Desktop" >> $GITHUB_STEP_SUMMARY
           echo "[👉 KLIK DI SINI UNTUK MEMBUKA DESKTOP]($WEB_URL)" >> $GITHUB_STEP_SUMMARY
@@ -102,20 +110,14 @@ jobs:
           echo "### 🔑 SSH Terminal Access" >> $GITHUB_STEP_SUMMARY
           echo "Gunakan perintah di bawah ini di Termux / Terminal kamu:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          if [ -n "$SSH_CMD" ]; then
-            # Ganti user default 'nokey' menjadi 'root'
-            CLEAN_SSH=$(echo "$SSH_CMD" | sed 's/nokey@/root@/')
-            echo "$CLEAN_SSH" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "# Gagal mengambil URL SSH, silakan cek log" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "$CLEAN_SSH" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "**Password SSH:** \`123456\`" >> $GITHUB_STEP_SUMMARY
 
       # 5. Keep Alive
       - name: Keep Alive
         run: |
-          echo "Workflow berjalan. Cek link Desktop & SSH di halaman Summary."
+          echo "Workflow berjalan. Cek link Desktop & SSH di layar log atau halaman Summary."
           sleep 3600
 
       # 6. Fix permissions
