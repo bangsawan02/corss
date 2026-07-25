@@ -69,11 +69,15 @@ jobs:
       # 4. Jalankan Cloudflare Web Tunnel & SSH Tunnel (localhost.run)
       - name: Start Tunnels (Web & SSH)
         run: |
+          # Generate SSH Key untuk Runner GitHub agar localhost.run bisa diautentikasi
+          mkdir -p ~/.ssh
+          [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+
           # A. Web Tunnel via Cloudflare
           docker run -d --network host --name cloudflared-tunnel cloudflare/cloudflared:latest tunnel --url http://localhost:3000 --http-host-header="localhost:3000"
 
-          # B. SSH Tunnel via localhost.run
-          ssh -o StrictHostKeyChecking=no -R 80:localhost:2222 nokey@localhost.run > ssh_tunnel.log 2>&1 &
+          # B. SSH Tunnel via localhost.run (Gunakan port 0 untuk TCP Forwarding)
+          ssh -o StrictHostKeyChecking=no -R 0:localhost:2222 nokey@localhost.run > ssh_tunnel.log 2>&1 &
 
           echo "Menunggu URL Tunnels..."
           
@@ -87,13 +91,18 @@ jobs:
 
           # Get SSH Command
           SSH_CMD=""
-          for i in {1..15}; do
-            SSH_CMD=$(grep -o 'ssh -p [0-9]* [^ ]*' ssh_tunnel.log || true)
+          for i in {1..20}; do
+            SSH_CMD=$(grep -E 'ssh -p [0-9]+' ssh_tunnel.log | head -n 1 || true)
             [ -n "$SSH_CMD" ] && break
             sleep 1
           done
 
-          CLEAN_SSH=$(echo "$SSH_CMD" | sed 's/nokey@/root@/')
+          if [ -n "$SSH_CMD" ]; then
+            CLEAN_SSH=$(echo "$SSH_CMD" | sed 's/nokey@/root@/')
+          else
+            CLEAN_SSH="Gagal mengambil perintah SSH. Log:"
+            cat ssh_tunnel.log || true
+          fi
 
           # Cetak LANGSUNG ke Konsol Log
           echo "=================================================="
