@@ -104,7 +104,7 @@ jobs:
       - name: Keep Alive
         run: |
           echo "Workflow berjalan. Cek link Desktop & SSH di layar log atau halaman Summary."
-          sleep 3600
+          sleep 18000
 
       # 6. Fix permissions
       - name: Fix permissions for persistent data
