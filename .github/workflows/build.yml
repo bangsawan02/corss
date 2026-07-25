@@ -30,13 +30,9 @@ jobs:
           sudo rm -f ${{ github.workspace }}/persistent-data/*.lock
           sudo rm -f ${{ github.workspace }}/persistent-data/*.pid
 
-      # 3. Setup Container & Download Cloudflared
-      - name: Setup Alpine IceWM & Download Cloudflared
+      # 3. Setup Container Alpine IceWM
+      - name: Setup Alpine IceWM
         run: |
-          # Download cloudflared ke folder persistent-data agar bisa diakses container
-          sudo curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ${{ github.workspace }}/persistent-data/cloudflared
-          sudo chmod +x ${{ github.workspace }}/persistent-data/cloudflared
-
           # Jalankan Container Alpine IceWM
           docker run -d --name alpine-desktop \
             -e PUID=1000 \
@@ -47,33 +43,38 @@ jobs:
             --shm-size="1gb" \
             lscr.io/linuxserver/webtop:alpine-icewm
 
-      # 4. Jalankan Tunnel di dalam Docker & Buat Summary (Selesai Cepat)
-      - name: Get Tunnel URL
+          echo "Menunggu Desktop booting (15 detik)..."
+          sleep 15
+
+      # 4. Jalankan Tunnel via Docker & Buat Summary (Selesai Cepat)
+      - name: Start Cloudflare Tunnel
         run: |
-          # Jalankan cloudflared di dalam Docker agar tidak terbunuh saat step selesai
-          docker exec -d alpine-desktop sh -c "/config/cloudflared tunnel --url http://localhost:3000 --http-host-header='localhost:3000' > /config/cloudflare.log 2>&1"
+          # Jalankan Cloudflare lewat official Docker image di host network
+          docker run -d --network host --name cloudflared-tunnel cloudflare/cloudflared:latest tunnel --url http://localhost:3000 --http-host-header="localhost:3000"
 
           echo "Menunggu URL Cloudflare..."
           for i in {1..20}; do
-            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' ${{ github.workspace }}/persistent-data/cloudflare.log || true)
+            URL=$(docker logs cloudflared-tunnel 2>&1 | grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' | head -n 1)
             if [ -n "$URL" ]; then
               # Tulis ke Summary
               echo "## 🚀 Alpine IceWM Desktop Ready" >> $GITHUB_STEP_SUMMARY
               echo "### [👉 KLIK DI SINI UNTUK MEMBUKA DESKTOP]($URL)" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**URL Direct:** \`$URL\`" >> $GITHUB_STEP_SUMMARY
+              echo "> 💡 *Catatan: Jika saat diklik muncul '502 Bad Gateway', tunggu 10 detik lalu refresh halamannya.*" >> $GITHUB_STEP_SUMMARY
+              
               echo "::notice title=LINK DESKTOP::$URL"
               break
             fi
-            sleep 1
+            sleep 2
           done
 
           if [ -z "$URL" ]; then
-            cat ${{ github.workspace }}/persistent-data/cloudflare.log
+            docker logs cloudflared-tunnel
             exit 1
           fi
 
-      # 5. Keep Alive (Step terpisah agar tidak menahan perenderan Summary)
+      # 5. Keep Alive (Menahan agar desktop bisa dipakai 1 jam)
       - name: Keep Alive
         run: |
           echo "Workflow berjalan. Silakan cek link di halaman Summary."
