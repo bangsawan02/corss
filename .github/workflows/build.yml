@@ -30,6 +30,7 @@ jobs:
           sudo rm -f ${{ github.workspace }}/persistent-data/*.lock
           sudo rm -f ${{ github.workspace }}/persistent-data/*.pid
 
+      # 3. Setup Cloudflared & Run Container
       - name: Setup Cloudflared & Run Alpine IceWM
         run: |
           # Download binary cloudflared
@@ -46,7 +47,7 @@ jobs:
             --shm-size="1gb" \
             lscr.io/linuxserver/webtop:alpine-icewm
 
-      # 3. Jalankan Tunnel, Ambil URL, dan Tahan Proses dalam 1 Step
+      # 4. Jalankan Tunnel & Tampilkan Link di Halaman Summary GitHub
       - name: Start Quick Tunnel and Keep Alive
         run: |
           # Jalankan tunnel di background
@@ -57,10 +58,14 @@ jobs:
           for i in {1..20}; do
             URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflare.log || true)
             if [ -n "$URL" ]; then
-              echo "=================================================="
-              echo " KLIK LINK DI BAWAH INI UNTUK MENGAKSES DESKTOP:"
-              echo "$URL"
-              echo "=================================================="
+              # Write to GitHub Step Summary (Tampil di halaman Summary utama GitHub)
+              echo "## 🚀 Alpine IceWM Desktop Ready" >> $GITHUB_STEP_SUMMARY
+              echo "### [👉 Klik di sini untuk membuka Desktop]($URL)" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "URL Direct: \`$URL\`" >> $GITHUB_STEP_SUMMARY
+              
+              # Buat notifikasi khusus
+              echo "::notice title=LINK DESKTOP::$URL"
               break
             fi
             sleep 1
@@ -71,16 +76,16 @@ jobs:
             exit 1
           fi
 
-          # Tahan proses di dalam step ini agar tunnel TIDAK MATI
-          echo "Workflow berjalan. Silakan akses link di atas."
+          # Tahan proses agar tunnel tidak mati
+          echo "Workflow berjalan. Akses link melalui tab Summary di atas."
           sleep 3600
 
-      # 4. Fix permissions sebelum menyimpan
+      # 5. Fix permissions sebelum menyimpan
       - name: Fix permissions for persistent data
         if: always()
         run: sudo chmod -R 777 ${{ github.workspace }}/persistent-data
 
-      # 5. Simpan Cache
+      # 6. Simpan Cache
       - name: Save persistent data cache
         if: always()
         uses: actions/cache/save@v4
@@ -88,7 +93,7 @@ jobs:
           path: ${{ github.workspace }}/persistent-data
           key: desktop-data-${{ github.run_id }}
 
-      # 6. Upload Artifacts
+      # 7. Upload Artifacts
       - name: Save data via Artifacts
         if: always()
         uses: actions/upload-artifact@v4
