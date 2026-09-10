@@ -13,36 +13,55 @@ jobs:
     env:
       FIREFOX_DATA: ${{ github.workspace }}/firefox_data
       FIREFOX_PORT: 3001
+      CACHE_PREFIX: firefox-profile-${{ github.repository }}-${{ github.ref_name }}-
       CACHE_KEY: firefox-profile-${{ github.repository }}-${{ github.ref_name }}-${{ github.run_id }}
 
     steps:
 
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # ============================================================
+      # 2. Siapkan folder data Firefox
+      # ============================================================
       - name: Siapkan Folder Firefox
         shell: bash
         run: |
           set -e
+
           mkdir -p "$FIREFOX_DATA"
           chmod 777 "$FIREFOX_DATA"
+
+          echo "Folder Firefox:"
           ls -ld "$FIREFOX_DATA"
 
-      - name: Pulihkan Firefox Profile dari Cache
+      # ============================================================
+      # 3. Restore cache profile
+      # ============================================================
+      - name: Pulihkan Firefox Profile
         uses: actions/cache/restore@v4
         with:
           path: ./firefox_data
           key: ${{ env.CACHE_KEY }}
           restore-keys: |
-            firefox-profile-${{ github.repository }}-${{ github.ref_name }}-
-            firefox-profile-${{ github.repository }}-
+            ${{ env.CACHE_PREFIX }}
 
+      # ============================================================
+      # 4. Pull image Firefox
+      # ============================================================
       - name: Pull Firefox Docker Image
         shell: bash
         run: |
           set -e
+
           docker pull lscr.io/linuxserver/firefox:latest
 
+      # ============================================================
+      # 5. Jalankan Firefox noVNC
+      # ============================================================
       - name: Jalankan Firefox noVNC
         shell: bash
         run: |
@@ -52,6 +71,9 @@ jobs:
 
           PUID="$(id -u)"
           PGID="$(id -g)"
+
+          echo "PUID: $PUID"
+          echo "PGID: $PGID"
 
           docker run -d \
             --name firefox-novnc \
@@ -63,32 +85,44 @@ jobs:
             --shm-size=2g \
             lscr.io/linuxserver/firefox:latest
 
-          echo "Menunggu Firefox siap..."
+          echo
+          echo "Menunggu Firefox noVNC..."
 
           READY=0
 
-          for i in {1..30}; do
+          for i in {1..60}; do
             if curl -k -fsS \
               "https://127.0.0.1:${FIREFOX_PORT}/" \
               >/dev/null 2>&1; then
-              echo "Firefox sudah siap."
+
               READY=1
+              echo "Firefox noVNC sudah siap."
               break
             fi
 
-            echo "Percobaan $i/30..."
+            echo "Menunggu Firefox... $i/60"
             sleep 2
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "Firefox gagal start."
+            echo
+            echo "Firefox gagal dijalankan."
+            echo
+            echo "=== CONTAINER STATUS ==="
             docker ps -a
+            echo
+            echo "=== FIREFOX LOG ==="
             docker logs firefox-novnc || true
             exit 1
           fi
 
+          echo
+          echo "=== CONTAINER ==="
           docker ps --filter "name=firefox-novnc"
 
+      # ============================================================
+      # 6. Install cloudflared
+      # ============================================================
       - name: Install Cloudflared
         shell: bash
         run: |
@@ -96,16 +130,36 @@ jobs:
 
           ARCH="$(dpkg --print-architecture)"
 
+          echo "Runner architecture: $ARCH"
+
+          case "$ARCH" in
+            amd64)
+              CLOUDFLARED_ARCH="amd64"
+              ;;
+            arm64)
+              CLOUDFLARED_ARCH="arm64"
+              ;;
+            *)
+              echo "Architecture tidak didukung: $ARCH"
+              exit 1
+              ;;
+          esac
+
           curl --fail \
             --location \
             --retry 3 \
             --output cloudflared.deb \
-            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb"
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CLOUDFLARED_ARCH}.deb"
 
           sudo dpkg -i cloudflared.deb
 
+          echo
+          echo "=== CLOUDFLARED VERSION ==="
           cloudflared --version
 
+      # ============================================================
+      # 7. Jalankan Cloudflare Quick Tunnel
+      # ============================================================
       - name: Jalankan Cloudflare Quick Tunnel
         shell: bash
         run: |
@@ -113,7 +167,10 @@ jobs:
 
           rm -f cloudflare.log
 
-          nohup cloudflared tunnel \
+          echo "Memulai Cloudflare Quick Tunnel..."
+          echo "Target: https://127.0.0.1:${FIREFOX_PORT}"
+
+          cloudflared tunnel \
             --url "https://127.0.0.1:${FIREFOX_PORT}" \
             --no-tls-verify \
             --protocol http2 \
@@ -121,12 +178,15 @@ jobs:
 
           CLOUDFLARED_PID=$!
 
-          echo "cloudflared PID: $CLOUDFLARED_PID"
-          echo "Menunggu URL tunnel..."
+          echo "Cloudflared PID: $CLOUDFLARED_PID"
 
           TUNNEL_URL=""
 
-          for i in {1..30}; do
+          echo
+          echo "Menunggu URL trycloudflare.com..."
+
+          for i in {1..60}; do
+
             if [ -f cloudflare.log ]; then
               TUNNEL_URL="$(
                 grep -oE \
@@ -140,48 +200,113 @@ jobs:
               break
             fi
 
-            echo "Menunggu tunnel... $i/30"
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo
+              echo "Cloudflared berhenti sebelum URL tunnel tersedia."
+              echo
+              echo "=== CLOUDFLARED LOG ==="
+              cat cloudflare.log || true
+              exit 1
+            fi
+
+            echo "Menunggu tunnel... $i/60"
             sleep 2
           done
 
-          echo
-          echo "=============================================="
-          echo "       FIREFOX NOVNC CLOUDFLARE URL"
-          echo "=============================================="
-
-          if [ -n "$TUNNEL_URL" ]; then
-            echo "$TUNNEL_URL"
-          else
-            echo "URL tunnel belum ditemukan."
+          if [ -z "$TUNNEL_URL" ]; then
+            echo
+            echo "Gagal mendapatkan URL Cloudflare."
+            echo
+            echo "=== CLOUDFLARED LOG ==="
             cat cloudflare.log || true
             exit 1
           fi
 
-          echo "=============================================="
+          echo
+          echo "===================================================="
+          echo "              FIREFOX NOVNC URL"
+          echo "===================================================="
+          echo
+          echo "$TUNNEL_URL"
+          echo
+          echo "===================================================="
+          echo "Jangan hentikan workflow selama URL digunakan."
+          echo "===================================================="
+          echo
 
-          ps -p "$CLOUDFLARED_PID" -o pid,cmd || true
+          # Simpan URL agar bisa dibaca step berikutnya jika diperlukan.
+          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
 
-      - name: Status Firefox dan Tunnel
+          # Pastikan cloudflared benar-benar hidup.
+          if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+            echo "Cloudflared mati."
+            cat cloudflare.log || true
+            exit 1
+          fi
+
+      # ============================================================
+      # 8. Monitor Firefox + Cloudflared
+      # ============================================================
+      - name: Monitor Session
         shell: bash
         run: |
-          echo "=== Docker Containers ==="
-          docker ps -a
+          set -e
 
           echo
-          echo "=== Firefox Logs ==="
-          docker logs --tail 100 firefox-novnc || true
-
+          echo "===================================================="
+          echo " Firefox noVNC + Cloudflare sedang aktif"
+          echo "===================================================="
           echo
-          echo "=== Cloudflare Log ==="
-          cat cloudflare.log || true
+          echo "URL:"
+          echo "$TUNNEL_URL"
+          echo
+          echo "Session maksimum: 5 jam"
+          echo
 
-      - name: Jalankan Session
-        shell: bash
-        run: |
-          echo "Firefox noVNC sedang aktif."
-          echo "Workflow akan aktif selama 5 jam."
-          sleep 18000
+          # Cari PID cloudflared.
+          CLOUDFLARED_PID="$(pgrep -xo cloudflared || true)"
 
+          if [ -z "$CLOUDFLARED_PID" ]; then
+            echo "Cloudflared tidak ditemukan."
+            echo
+            cat cloudflare.log || true
+            exit 1
+          fi
+
+          echo "Cloudflared PID: $CLOUDFLARED_PID"
+
+          for i in {1..1800}; do
+
+            # Pastikan container Firefox masih hidup.
+            if ! docker ps --format '{{.Names}}' | grep -qx "firefox-novnc"; then
+              echo
+              echo "Container Firefox berhenti!"
+              echo
+              docker logs --tail 100 firefox-novnc || true
+              exit 1
+            fi
+
+            # Pastikan cloudflared masih hidup.
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo
+              echo "Cloudflared berhenti!"
+              echo
+              cat cloudflare.log || true
+              exit 1
+            fi
+
+            # Tampilkan heartbeat setiap 60 detik.
+            if (( i % 6 == 0 )); then
+              ELAPSED=$((i * 10))
+              echo "Session aktif: ${ELAPSED} detik"
+            fi
+
+            sleep 10
+          done
+
+      # ============================================================
+      # 9. Simpan profile Firefox
+      # ============================================================
       - name: Simpan Firefox Profile ke Cache
         if: always()
         uses: actions/cache/save@v4
@@ -189,6 +314,27 @@ jobs:
           path: ./firefox_data
           key: ${{ env.CACHE_KEY }}
 
+      # ============================================================
+      # 10. Debug Log
+      # ============================================================
+      - name: Tampilkan Log
+        if: always()
+        shell: bash
+        run: |
+          echo "=== DOCKER STATUS ==="
+          docker ps -a || true
+
+          echo
+          echo "=== FIREFOX LOG ==="
+          docker logs --tail 100 firefox-novnc 2>/dev/null || true
+
+          echo
+          echo "=== CLOUDFLARED LOG ==="
+          cat cloudflare.log 2>/dev/null || true
+
+      # ============================================================
+      # 11. Cleanup
+      # ============================================================
       - name: Cleanup
         if: always()
         shell: bash
